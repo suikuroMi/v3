@@ -3,7 +3,7 @@ import shutil
 import json
 import time
 import glob
-from src.core.finder import find_path 
+from src.core.finder import find_path
 
 class FileSkills:
     # --- V5 CONFIGURATION ---

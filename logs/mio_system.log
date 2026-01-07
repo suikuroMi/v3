@@ -1,0 +1,48 @@
+2026-01-07 14:11:30,893 - INFO - main - Performing health checks...
+2026-01-07 14:11:30,896 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:11:30,911 - INFO - main - Launching UI...
+2026-01-07 14:11:32,914 - CRITICAL - main - Runtime Crash: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 10, in <module>
+    from src.agent.llm_engine import BrainEngine
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\agent\llm_engine.py", line 10, in <module>
+    from src.skills.registry import ToolRegistry
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\registry.py", line 1, in <module>
+    from src.skills.file_ops import FileSkills
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\file_ops.py", line 6, in <module>
+    from src.core.finder import find_path
+ImportError: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
+2026-01-07 14:12:03,080 - INFO - main - Performing health checks...
+2026-01-07 14:12:03,082 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:12:03,086 - INFO - main - Launching UI...
+2026-01-07 14:12:03,649 - CRITICAL - main - Runtime Crash: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 10, in <module>
+    from src.agent.llm_engine import BrainEngine
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\agent\llm_engine.py", line 10, in <module>
+    from src.skills.registry import ToolRegistry
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\registry.py", line 1, in <module>
+    from src.skills.file_ops import FileSkills
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\file_ops.py", line 6, in <module>
+    from src.core.finder import find_path
+ImportError: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
+2026-01-07 14:17:17,712 - INFO - main - Performing health checks...
+2026-01-07 14:17:17,714 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:17:17,719 - INFO - main - Launching UI...
+2026-01-07 14:17:19,486 - CRITICAL - main - Runtime Crash: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 10, in <module>
+    from src.agent.llm_engine import BrainEngine
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\agent\llm_engine.py", line 10, in <module>
+    from src.skills.registry import ToolRegistry
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\registry.py", line 3, in <module>
+    from src.skills.coding_ops import CodingSkills
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\coding_ops.py", line 11, in <module>
+    from src.core.finder import find_path
+ImportError: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
