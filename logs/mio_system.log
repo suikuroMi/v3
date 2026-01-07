@@ -46,3 +46,55 @@ Traceback (most recent call last):
   File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\coding_ops.py", line 11, in <module>
     from src.core.finder import find_path
 ImportError: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
+2026-01-07 14:23:58,314 - INFO - main - Performing health checks...
+2026-01-07 14:23:58,317 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:23:58,321 - INFO - main - Launching UI...
+2026-01-07 14:23:58,903 - CRITICAL - main - Runtime Crash: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 10, in <module>
+    from src.agent.llm_engine import BrainEngine
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\agent\llm_engine.py", line 10, in <module>
+    from src.skills.registry import ToolRegistry
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\registry.py", line 1, in <module>
+    from src.skills.file_ops import FileSkills
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\file_ops.py", line 6, in <module>
+    from src.core.finder import find_path
+ImportError: cannot import name 'find_path' from 'src.core.finder' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\core\finder.py)
+2026-01-07 14:36:20,561 - INFO - main - Performing health checks...
+2026-01-07 14:36:20,562 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:36:20,566 - INFO - main - Launching UI...
+2026-01-07 14:37:01,822 - CRITICAL - main - Runtime Crash: No module named 'src.ui.apps.base_app'
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 17, in <module>
+    from src.ui.apps.chat import ChatApp
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\chat.py", line 4, in <module>
+    from .base_app import BaseApp
+ModuleNotFoundError: No module named 'src.ui.apps.base_app'
+2026-01-07 14:42:57,929 - INFO - main - Performing health checks...
+2026-01-07 14:42:57,931 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:42:57,935 - INFO - main - Launching UI...
+2026-01-07 14:42:59,960 - CRITICAL - main - Runtime Crash: No module named 'src.ui.apps.base_app'
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 18, in <module>
+    from src.ui.apps.files import FilesApp
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\files.py", line 1, in <module>
+    from .base_app import BaseApp
+ModuleNotFoundError: No module named 'src.ui.apps.base_app'
+2026-01-07 14:43:18,000 - INFO - main - Performing health checks...
+2026-01-07 14:43:18,002 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:43:18,006 - INFO - main - Launching UI...
+2026-01-07 14:43:19,950 - CRITICAL - main - Runtime Crash: No module named 'src.ui.apps.base_app'
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 18, in <module>
+    from src.ui.apps.files import FilesApp
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\files.py", line 1, in <module>
+    from .base_app import BaseApp
+ModuleNotFoundError: No module named 'src.ui.apps.base_app'

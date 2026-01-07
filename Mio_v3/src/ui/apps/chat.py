@@ -1,7 +1,8 @@
 from PySide6.QtWidgets import QTextBrowser, QLineEdit, QPushButton, QFrame, QHBoxLayout
 from PySide6.QtGui import QTextCursor
 from PySide6.QtCore import Qt, Signal
-from .base_app import BaseApp
+# [FIX]: Changed '.base_app' to '.base' to match your actual filename
+from .base import BaseApp
 
 class ChatApp(BaseApp):
     request_pose = Signal(str) # To change avatar
@@ -61,7 +62,7 @@ class ChatApp(BaseApp):
         self.append_chat("You", text)
         self.input_field.clear()
         
-        # Send to main window handler via signal, or handle here if threading passed
+        # Send to main window handler via signal
         self.command_signal.emit(text) 
         
     def append_chat(self, user, text):

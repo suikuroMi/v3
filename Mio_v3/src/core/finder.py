@@ -445,6 +445,20 @@ def find_path_ranked(
     matches.sort(key=lambda x: x['score'], reverse=True)
     return matches[:limit]
 
+def find_path(target: str, item_type: str = "folder") -> Optional[str]:
+    """
+    Compatibility wrapper for file_ops.py.
+    Calls the advanced ranker but returns just the best path string (or None).
+    """
+    # We ask for the top 1 result
+    results = find_path_ranked(target, item_type, limit=1, timeout=2.0)
+    
+    # If we found something, return the 'path' string
+    if results:
+        return results[0]['path']
+    
+    return None
+
 def batch_search(targets: List[str]) -> Dict[str, List[Dict]]:
     results = {}
     for t in targets:

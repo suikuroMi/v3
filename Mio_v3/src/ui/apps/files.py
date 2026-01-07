@@ -1,4 +1,5 @@
-from .base_app import BaseApp
+# [FIX]: Changed '.base_app' to '.base'
+from .base import BaseApp
 
 class FilesApp(BaseApp):
     def __init__(self):
