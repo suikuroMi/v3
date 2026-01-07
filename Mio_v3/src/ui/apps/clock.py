@@ -1,6 +1,6 @@
 from PySide6.QtCore import QTimer, QTime, Qt
 from PySide6.QtWidgets import QLabel, QTimeEdit, QPushButton, QMessageBox
-from .base_app import BaseApp
+from .base import BaseApp  # <--- FIXED
 from src.skills.productivity import ProductivitySkills
 
 class ClockApp(BaseApp):

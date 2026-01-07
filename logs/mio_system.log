@@ -98,3 +98,72 @@ Traceback (most recent call last):
   File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\files.py", line 1, in <module>
     from .base_app import BaseApp
 ModuleNotFoundError: No module named 'src.ui.apps.base_app'
+2026-01-07 14:49:10,297 - INFO - main - Performing health checks...
+2026-01-07 14:49:10,299 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:49:10,303 - INFO - main - Launching UI...
+2026-01-07 14:49:12,266 - CRITICAL - main - Runtime Crash: No module named 'src.ui.apps.base_app'
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 19, in <module>
+    from src.ui.apps.system import SystemApp
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\system.py", line 1, in <module>
+    from .base_app import BaseApp
+ModuleNotFoundError: No module named 'src.ui.apps.base_app'
+2026-01-07 14:53:26,571 - INFO - main - Performing health checks...
+2026-01-07 14:53:26,573 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:53:26,577 - INFO - main - Launching UI...
+2026-01-07 14:53:28,464 - CRITICAL - main - Runtime Crash: No module named 'src.ui.apps.base_app'
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 20, in <module>
+    from src.ui.apps.dev import DevApp
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\dev.py", line 1, in <module>
+    from .base_app import BaseApp
+ModuleNotFoundError: No module named 'src.ui.apps.base_app'
+2026-01-07 14:57:24,809 - INFO - main - Performing health checks...
+2026-01-07 14:57:24,811 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:57:24,815 - INFO - main - Launching UI...
+2026-01-07 14:57:26,705 - CRITICAL - main - Runtime Crash: No module named 'src.ui.apps.base_app'
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 21, in <module>
+    from src.ui.apps.git import GitApp
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\git.py", line 1, in <module>
+    from .base_app import BaseApp
+ModuleNotFoundError: No module named 'src.ui.apps.base_app'
+2026-01-07 14:59:50,082 - INFO - main - Performing health checks...
+2026-01-07 14:59:50,084 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 14:59:50,088 - INFO - main - Launching UI...
+2026-01-07 14:59:52,000 - CRITICAL - main - Runtime Crash: cannot import name 'DbApp' from 'src.ui.apps.database' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\database.py)
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 264, in _launch_ui
+    from src.ui.window import MascotWidget
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 22, in <module>
+    from src.ui.apps.database import DbApp
+ImportError: cannot import name 'DbApp' from 'src.ui.apps.database' (C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\apps\database.py)
+2026-01-07 15:01:02,022 - INFO - main - Performing health checks...
+2026-01-07 15:01:02,024 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 15:01:02,028 - INFO - main - Launching UI...
+2026-01-07 15:01:04,050 - CRITICAL - main - Runtime Crash: type object 'DbSkills' has no attribute 'db_info'
+Traceback (most recent call last):
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\main.py", line 271, in _launch_ui
+    window = MascotWidget()
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\ui\window.py", line 363, in __init__
+    self.brain = BrainEngine()
+                 ~~~~~~~~~~~^^
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\agent\llm_engine.py", line 28, in __init__
+    self.tools = ToolRegistry()
+                 ~~~~~~~~~~~~^^
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\registry.py", line 17, in __init__
+    self.register_all()
+    ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Rommel\Desktop\M.I.O v3\Mio_v3\src\skills\registry.py", line 72, in register_all
+    self.register("DB_INFO", DbSkills.db_info)
+                             ^^^^^^^^^^^^^^^^
+AttributeError: type object 'DbSkills' has no attribute 'db_info'
+2026-01-07 15:05:40,130 - INFO - main - Performing health checks...
+2026-01-07 15:05:40,132 - INFO - main - Applying Security Profile: NORMAL
+2026-01-07 15:05:40,136 - INFO - main - Launching UI...

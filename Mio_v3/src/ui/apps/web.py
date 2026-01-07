@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QLineEdit, QPushButton, QLabel
-from .base_app import BaseApp
+from .base import BaseApp  # <--- FIXED
 
 class WebApp(BaseApp):
     def __init__(self):

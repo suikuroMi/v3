@@ -1,4 +1,4 @@
-from .base_app import BaseApp
+from .base import BaseApp  # <--- FIXED
 from src.skills.git_ops import GitSkills
 
 class GitApp(BaseApp):

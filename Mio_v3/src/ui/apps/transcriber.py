@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QFileDialog, QLabel, QPushButton
-from .base_app import BaseApp
+from PySide6.QtCore import Qt
+from .base import BaseApp  # <--- FIXED
 from src.skills.audio_ops import AudioSkills
 
 class TranscriberApp(BaseApp):

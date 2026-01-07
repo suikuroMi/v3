@@ -9,12 +9,9 @@ import gzip
 import threading
 import shutil
 import hashlib
-import uuid
-import logging
 import multiprocessing
 from contextlib import contextmanager
-from typing import Dict, Any, Union, List, Optional
-from src.skills.file_ops import FileSkills
+from typing import Dict, Any
 
 # =========================================================================
 # ⚙️ INFRASTRUCTURE LAYER
@@ -41,7 +38,7 @@ class DbConfig:
                 if 'threshold' in key: return float(val)
                 return int(val)
             except ValueError:
-                logging.warning(f"⚠️ Invalid config {env_key}='{val}'. Using default.")
+                pass
         return cls.DEFAULTS.get(key)
 
 class GlobalConnectionPool:
@@ -229,6 +226,47 @@ class DbSkills:
     # --- OPERATIONS ---
 
     @staticmethod
+    def db_info(args="data/search_index.db") -> str:
+        """[DB_INFO] path (Returns formatted string info)"""
+        try:
+            db_path = args.strip() if args else "data/search_index.db"
+            if not os.path.exists(db_path): return f"❌ Database not found: {db_path}"
+            
+            size_mb = os.path.getsize(db_path) / (1024*1024)
+            
+            with GlobalConnectionPool.get_connection(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table'")
+                table_count = cursor.fetchone()[0]
+                
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [r[0] for r in cursor.fetchall()]
+                
+            return (f"📊 **Database Report**: {os.path.basename(db_path)}\n"
+                    f"   📂 Path: {db_path}\n"
+                    f"   💾 Size: {size_mb:.2f} MB\n"
+                    f"   🔢 Tables: {table_count}\n"
+                    f"   📝 Names: {', '.join(tables)}")
+        except Exception as e: return f"❌ Error retrieving info: {e}"
+
+    @staticmethod
+    def schema_view(args="data/search_index.db") -> str:
+        """[DB_SCHEMA] path (Returns schema dump)"""
+        try:
+            db_path = args.strip() if args else "data/search_index.db"
+            if not os.path.exists(db_path): return "❌ DB Not Found"
+            
+            output = [f"🏗️ **Schema for {os.path.basename(db_path)}**"]
+            with GlobalConnectionPool.get_connection(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
+                for type_, name, sql in cursor.fetchall():
+                    output.append(f"\n🔹 {type_.upper()}: {name}")
+                    output.append(f"   ```sql\n   {sql}\n   ```")
+            return "\n".join(output)
+        except Exception as e: return f"❌ Error: {e}"
+
+    @staticmethod
     def query_sqlite(args) -> Dict[str, Any]:
         """[DB_QUERY] path.db | SELECT... | [params]"""
         try:
@@ -343,7 +381,8 @@ class DbSkills:
         final_path = None
         
         try:
-            db_path = args.strip()
+            # Handle args being empty or a path
+            db_path = args.strip() if args else "data/search_index.db"
             if not os.path.exists(db_path): return {'success': False, 'error': "DB Not Found"}
             
             has_space, required = DbSkills._check_disk_space(db_path)
@@ -443,8 +482,6 @@ class DbSkills:
             return {'success': True, 'path': enc_path, 'msg': "Encrypted"}
         except ImportError: return {'success': False, 'error': "No cryptography lib"}
         except Exception as e: return {'success': False, 'error': str(e)}
-
-    # --- RESTORED API METHODS (V14 Ported to Structured Return) ---
 
     @staticmethod
     def import_data(args) -> Dict[str, Any]:
@@ -547,7 +584,6 @@ class DbSkills:
             for _, path in backups[keep_count:]:
                 os.remove(path)
                 deleted += 1
-            # Age Check logic identical to V14...
             return {'success': True, 'deleted': deleted}
         except Exception as e: return {'success': False, 'error': str(e)}
 

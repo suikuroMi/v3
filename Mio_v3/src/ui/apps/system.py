@@ -1,4 +1,4 @@
-from .base_app import BaseApp
+from .base import BaseApp  # <--- FIXED IMPORT
 from src.skills.system_ops import SystemSkills
 
 class SystemApp(BaseApp):

@@ -1,6 +1,6 @@
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QLabel, QPushButton
-from .base_app import BaseApp
+from .base import BaseApp  # <--- FIXED
 from src.skills.audio_ops import AudioSkills
 
 class VoiceApp(BaseApp):

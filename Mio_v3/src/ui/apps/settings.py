@@ -1,4 +1,4 @@
-from .base_app import BaseApp
+from .base import BaseApp  # <--- FIXED
 from src.skills.settings_ops import SettingsSkills
 
 class SettingsApp(BaseApp):

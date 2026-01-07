@@ -1,4 +1,4 @@
-from .base_app import BaseApp
+from .base import BaseApp  # <--- FIXED (Was .base_app)
 
 class DevApp(BaseApp):
     def __init__(self):
