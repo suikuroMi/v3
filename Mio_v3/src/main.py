@@ -1,144 +1,288 @@
+#!/usr/bin/env python3
+"""
+Ookami Mio AI Assistant - Enterprise Edition V4
+Main entry point with Auto-Dependency Management and First-Run Wizard.
+"""
+
 import sys
 import os
 import time
-import atexit
+import socket
+import logging
+import logging.handlers
 import argparse
-import traceback  # <--- Added for better error reporting
+import traceback
+import shutil
+import atexit
+import subprocess
+import importlib.util
+from typing import Dict, Any
 
-# --- 1. PATH CONFIGURATION (Critical) ---
-# Ensures Python finds the 'src' module no matter where you run it from
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# ============================================================================
+# 🌍 GLOBALS & CONFIG
+# ============================================================================
+VERSION = "3.3.0 (Enterprise)"
+APP_NAME = "Ookami Mio"
+DEFAULT_PORT = 50005 
 
-# --- 2. QT ENVIRONMENT CONFIG ---
-# Setting these env vars helps PySide6 find plugins on Windows
-os.environ["QT_API"] = "pyside6"
-os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
-os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+# ============================================================================
+# 🏗️ APPLICATION LAUNCHER
+# ============================================================================
 
-VERSION = "3.0.0 (Enterprise)"
+class ApplicationLauncher:
+    """Orchestrates the entire application startup sequence."""
+    
+    def __init__(self):
+        self.start_time = time.time()
+        self.logger = None
+        self.config = {}
+        self.args = None
+        self.lock_socket = None
+        self.restart_needed = False
 
-def parse_arguments():
-    """Parses command line arguments for advanced startup options."""
-    parser = argparse.ArgumentParser(description='Ookami Mio AI Assistant')
-    parser.add_argument('--safe-mode', action='store_true', help='Force strict security settings')
-    parser.add_argument('--no-recovery', action='store_true', help='Skip health checks and auto-repair')
-    parser.add_argument('--debug', action='store_true', help='Enable verbose debug logging')
-    parser.add_argument('--version', action='store_true', help='Show version info and exit')
-    return parser.parse_args()
+    def run(self) -> int:
+        """Main execution flow."""
+        try:
+            # 1. Bootstrap (Paths & Args)
+            self._setup_paths()
+            self.args = self._parse_arguments()
+            
+            # Simple pre-log print
+            print(f"🐺 Initializing {APP_NAME} v{VERSION}...")
 
-def check_requirements():
-    """Ensures the host system meets minimum requirements."""
-    # 1. Python Version Check (3.8+)
-    if sys.version_info < (3, 8):
-        print(f"❌ Critical Error: Python 3.8+ required. You are running {sys.version}.")
+            # 2. Dependency Self-Healing (BEFORE logging/imports)
+            if not self._check_and_install_dependencies():
+                print("❌ Critical dependencies missing. Aborting.")
+                return 1
+                
+            if self.restart_needed:
+                self._perform_restart()
+                return 0
+
+            # 3. Infrastructure
+            self.logger = self._setup_logging(self.args.debug)
+            self.config = self._load_configuration()
+            
+            # 4. First Run Experience
+            if self._is_first_run():
+                self._run_first_time_wizard()
+
+            if not self._ensure_single_instance():
+                return 1
+
+            # 5. Validation & Health
+            self._validate_configuration()
+            self._perform_health_checks()
+
+            # 6. Security & Recovery
+            self._apply_security_profile()
+            self._init_recovery_system()
+
+            # 7. Launch UI
+            return self._launch_ui()
+
+        except KeyboardInterrupt:
+            print("\n👋 Shutdown requested by user.")
+            return 0
+        except Exception as e:
+            if self.logger:
+                self.logger.critical(f"FATAL ERROR: {e}", exc_info=True)
+            else:
+                traceback.print_exc()
+            return 1
+        finally:
+            self._cleanup()
+
+    def _cleanup(self):
+        """Final cleanup hooks."""
+        if self.lock_socket:
+            try:
+                self.lock_socket.close()
+            except: pass
+
+    # --- PHASE 0: DEPENDENCIES ---
+    def _check_and_install_dependencies(self):
+        """Checks for Python packages and offers to install them."""
+        required = {
+            'PySide6': '6.5.0',
+            'ollama': '0.1.0',
+            'requests': '2.25.0'
+        }
+        
+        missing = []
+        for pkg in required:
+            if importlib.util.find_spec(pkg) is None:
+                missing.append(pkg)
+        
+        if not missing: return True
+        
+        print(f"\n⚠️  Missing required packages: {', '.join(missing)}")
+        if self.args.auto_install:
+            choice = 'y'
+        else:
+            choice = input("   Install them automatically? (Y/n): ").strip().lower()
+        
+        if choice in ['y', 'yes', '']:
+            try:
+                print("📦 Installing dependencies... (This may take a moment)")
+                subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
+                print("✅ Installation complete.")
+                self.restart_needed = True
+                return True
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Installation failed: {e}")
+                print(f"   Run manually: pip install {' '.join(missing)}")
+                return False
         return False
-    return True
 
-def cleanup_resources():
-    """Runs on exit to ensure clean shutdown."""
-    print("\n🧹 Shutting down Mio services...")
-    print("✅ Cleanup complete. Oyasumi! 🐺")
+    def _perform_restart(self):
+        """Restarts the application to load new libraries."""
+        print("🔄 Restarting application...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
-def main():
-    # Start the Stopwatch
-    startup_start = time.time()
+    # --- PHASE 1: BOOTSTRAP ---
+    def _setup_paths(self):
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+
+    def _parse_arguments(self):
+        parser = argparse.ArgumentParser(description=f"{APP_NAME} Launcher")
+        parser.add_argument('--version', action='store_true', help='Show version info')
+        parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+        parser.add_argument('--safe-mode', action='store_true', help='Force strict security')
+        parser.add_argument('--auto-install', action='store_true', help='Auto-install missing deps')
+        parser.add_argument('--profile', choices=['normal', 'strict', 'paranoid'], default='normal')
+        parser.add_argument('--skip-checks', action='store_true', help='Skip system health checks')
+        parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='Single-instance lock port')
+        return parser.parse_args()
+
+    # --- PHASE 2: INFRASTRUCTURE ---
+    def _setup_logging(self, debug_mode: bool):
+        log_dir = os.path.join(os.getcwd(), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, "mio_system.log")
+
+        logger = logging.getLogger("Mio")
+        logger.setLevel(logging.DEBUG if debug_mode else logging.INFO)
+        
+        if logger.hasHandlers():
+            for h in logger.handlers: h.close()
+            logger.handlers.clear()
+
+        file_fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(module)s - %(message)s')
+        console_fmt = logging.Formatter('🐺 %(message)s')
+
+        fh = logging.handlers.RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+        fh.setFormatter(file_fmt)
+        logger.addHandler(fh)
+
+        ch = logging.StreamHandler()
+        ch.setFormatter(console_fmt)
+        logger.addHandler(ch)
+        return logger
+
+    def _ensure_single_instance(self):
+        port = self.config.get("lock_port", DEFAULT_PORT)
+        try:
+            self.lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.lock_socket.bind(('127.0.0.1', port))
+            atexit.register(self.lock_socket.close)
+            self.logger.debug(f"Instance lock acquired on port {port}.")
+            return True
+        except socket.error:
+            self.logger.error(f"Another instance is running (Port {port} busy).")
+            print("❌ Mio is already running!")
+            return False
+
+    # --- PHASE 3: CONFIG & FIRST RUN ---
+    def _load_configuration(self) -> Dict[str, Any]:
+        return {
+            "debug": self.args.debug,
+            "profile": "strict" if self.args.safe_mode else self.args.profile,
+            "max_memory_mb": int(os.environ.get("MIO_MAX_MEMORY", 4096)), 
+            "lock_port": self.args.port,
+            "capabilities": {}
+        }
     
-    # Register cleanup hook
-    atexit.register(cleanup_resources)
+    def _is_first_run(self):
+        config_dir = os.path.expanduser("~/.mio")
+        return not os.path.exists(config_dir)
 
-    # Parse Flags
-    args = parse_arguments()
+    def _run_first_time_wizard(self):
+        print("\n" + "="*50)
+        print("🎉 Welcome to Ookami Mio!")
+        print("="*50)
+        print("Creating configuration directory at ~/.mio ...")
+        os.makedirs(os.path.expanduser("~/.mio"), exist_ok=True)
+        print("✅ Setup complete. Launching...")
+        time.sleep(1)
 
-    if args.version:
-        print(f"🐺 Ookami Mio v{VERSION}")
-        sys.exit(0)
+    def _validate_configuration(self):
+        mem = self.config["max_memory_mb"]
+        if mem < 256: 
+            self.logger.warning(f"Memory limit {mem}MB too low. Bumping to 512MB.")
+            self.config["max_memory_mb"] = 512
 
-    print(f"🚀 Launching Ookami Mio v{VERSION}...")
+    def _perform_health_checks(self):
+        if self.args.skip_checks: return
 
-    # Validate System
-    if not check_requirements():
-        input("Press Enter to exit...")
-        sys.exit(1)
+        self.logger.info("Performing health checks...")
+        caps = self.config["capabilities"]
+        
+        caps["has_ffmpeg"] = bool(shutil.which("ffmpeg"))
+        caps["has_git"] = bool(shutil.which("git"))
+        
+        if not caps["has_ffmpeg"]: self.logger.warning("Missing 'ffmpeg'. Audio disabled.")
+        if not caps["has_git"]: self.logger.warning("Missing 'git'.")
 
-    # Handle Flags
-    if args.debug:
-        print("🔍 DEBUG MODE: Enabled")
-        os.environ["MIO_DEBUG"] = "true"
-    
-    if args.safe_mode:
-        print("🛡️ SAFE MODE: Forcing strict security protocols.")
+    # --- PHASE 4: SECURITY ---
+    def _apply_security_profile(self):
+        profile = self.config["profile"]
+        self.logger.info(f"Applying Security Profile: {profile.upper()}")
+        
+        # Inject into Env for skills to read
+        can_write = "0" if profile == "paranoid" else "1"
+        can_exec = "1" if profile == "normal" else "0"
+        
+        os.environ["MIO_ALLOW_WRITE"] = can_write
+        os.environ["MIO_ALLOW_EXEC"] = can_exec
+        os.environ["MIO_MAX_MEMORY"] = str(self.config["max_memory_mb"])
 
-    # --- 3. RECOVERY & SECURITY LAYER ---
-    if not args.no_recovery:
+    def _init_recovery_system(self):
         try:
             from src.core.recovery import EmergencyRecovery
-            from src.skills.settings_ops import SettingsSkills
-            
-            # Activate Shields
             EmergencyRecovery.enable()
+        except ImportError: pass
+
+    # --- PHASE 5: LAUNCH ---
+    def _launch_ui(self):
+        self.logger.info("Launching UI...")
+        try:
+            from PySide6.QtWidgets import QApplication
+            from src.ui.window import MascotWidget
             
-            # Health Check
-            is_healthy, warnings = EmergencyRecovery.check_health()
-            if not is_healthy:
-                print(f"⚠️  SYSTEM HEALTH WARNING: {warnings}")
-                if "settings_corrupted" in warnings:
-                    print("🔄 Auto-Repairing Settings...")
-                    if EmergencyRecovery.repair_settings():
-                        print("✅ Settings repaired from backup.")
-                    else:
-                        print("❌ Repair failed. Performing Factory Reset.")
-                        EmergencyRecovery.factory_reset()
-
-            # God Mode Check
-            if SettingsSkills.get("god_mode") and not args.safe_mode:
-                print("\n" + "⚡"*30)
-                print("   WARNING: GOD MODE ACTIVE")
-                print("   ALL SAFETY LIMITERS ARE DISABLED")
-                print("⚡"*30 + "\n")
-
-        except ImportError as e:
-            print(f"⚠️  Module Warning: Recovery system missing ({e}). Skipping...")
+            app = QApplication(sys.argv)
+            app.setApplicationName(APP_NAME)
+            app.setApplicationVersion(VERSION)
+            
+            # Use singleton/env config inside widget
+            window = MascotWidget() 
+            window.show()
+            
+            return app.exec()
         except Exception as e:
-            print(f"❌ Recovery Error: {e}. Continuing startup...")
+            self.logger.critical(f"Runtime Crash: {e}", exc_info=True)
+            return 1
 
-    # --- 4. LAUNCH UI ---
-    try:
-        # Import PySide6 here to catch import errors specifically
-        from PySide6.QtWidgets import QApplication
-        from src.ui.window import MascotWidget
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
 
-        app = QApplication(sys.argv)
-        app.setStyle("Fusion")
-
-        mascot = MascotWidget()
-        mascot.show()
-
-        # Stop Stopwatch
-        duration = time.time() - startup_start
-        print(f"✅ Startup complete in {duration:.2f}s. Mio is ready!")
-
-        sys.exit(app.exec())
-
-    except ImportError as e:
-        print("\n❌ CRITICAL ERROR: PySide6 Import Failed.")
-        print(f"   Error Details: {e}")
-        print("   Debugging Info:")
-        print(f"   - Python Executable: {sys.executable}")
-        print(f"   - Python Version: {sys.version}")
-        print("   - Site Packages Paths:")
-        for p in sys.path:
-            print(f"     {p}")
-        print("\n💡 Tip: You might have multiple Python versions installed.")
-        print("   Try running: 'python -m pip install PySide6'")
-        sys.exit(1)
-        
-    except Exception as e:
-        print(f"\n❌ Runtime Crash: {e}")
-        traceback.print_exc() # Prints the full error stack to see WHERE it crashed
-        sys.exit(1)
+def main():
+    launcher = ApplicationLauncher()
+    sys.exit(launcher.run())
 
 if __name__ == "__main__":
     main()
