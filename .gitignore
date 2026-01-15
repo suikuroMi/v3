@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+
+# Mio Data & Memory
+*.db
+*.sqlite
+*.sqlite3
+src/core/memory/
+logs/
+snapshots/
+user_data/
+.mio_history.json
+.mio_snippets.json
+
+# System
+.DS_Store
+Thumbs.db
