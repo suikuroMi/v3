@@ -1,0 +1,15 @@
+# 1. Ignore everything in the ROOT folder only
+/*
+
+# 2. Whitelist (Allow) the Mio_v3 folder
+!/Mio_v3/
+
+# 3. Whitelist (Allow) important scripts in the root
+!/*.py
+!/*.bat
+!/.gitignore
+
+# 4. Cleanup: Ignore junk files specifically inside Mio_v3 (if they exist)
+Mio_v3/**/__pycache__/
+Mio_v3/**/*.py[cod]
+Mio_v3/**/Thumbs.db
