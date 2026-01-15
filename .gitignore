@@ -1,28 +1,15 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
+# 1. Ignore EVERYTHING by default
+*
 
-# Environments
-.env
-venv/
-env/
+# 2. Whitelist (Allow) the Mio_v3 folder
+!Mio_v3/
 
-# IDEs
-.vscode/
-.idea/
+# 3. Whitelist everything INSIDE Mio_v3
+!Mio_v3/**
 
-# Mio Data & Memory
-*.db
-*.sqlite
-*.sqlite3
-src/core/memory/
-logs/
-snapshots/
-user_data/
-.mio_history.json
-.mio_snippets.json
-
-# System
-.DS_Store
-Thumbs.db
+# 4. Optional: Still ignore junk files *inside* Mio_v3 if they appear
+Mio_v3/**/__pycache__/
+Mio_v3/**/*.py[cod]
+Mio_v3/**/*.log
+Mio_v3/**/.DS_Store
+Mio_v3/**/Thumbs.db
