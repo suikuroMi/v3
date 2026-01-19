@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QFrame, 
-                               QPushButton, QSplitter, QTabWidget, QTextEdit)
+                               QPushButton, QSplitter, QTabWidget, QTextEdit, QLabel)
 from PySide6.QtCore import Qt
 from src.ui.utils.overlay import LoadingOverlay
 
@@ -9,7 +9,7 @@ class WorkstationWindow(QWidget):
         self.app_manager = app_manager
         self.current_app_name = None 
         
-        self.resize(1200, 800)
+        self.resize(1300, 850)
         self.setStyleSheet("background: #1e1e2e; color: #cdd6f4;")
         
         main_layout = QHBoxLayout(self)
@@ -45,8 +45,8 @@ class WorkstationWindow(QWidget):
 
         self.splitter.addWidget(self.left_pane)
         self.splitter.addWidget(self.right_pane)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 1)
         
         main_layout.addWidget(self.splitter)
         
@@ -66,9 +66,18 @@ class WorkstationWindow(QWidget):
         lay.setContentsMargins(5, 10, 5, 10)
         lay.setAlignment(Qt.AlignTop)
         
+        # UPDATED BUTTON LIST
+        # Included core apps + new tools
         btns = [
-            ("💬", "Chat"), ("📂", "Files"), ("👩‍💻", "Dev"),
-            ("🐙", "Git"), ("📊", "Database"), ("⚙️", "Settings")
+            ("💬", "Chat"), 
+            ("📂", "Files"), 
+            ("🌐", "Web"),          # New
+            ("🗣️", "Translator"),   # New (Points to StreamApp)
+            ("⬇️", "Downloader"),   # New
+            ("👩‍💻", "Dev"),
+            ("🐙", "Git"), 
+            ("📊", "Database"), 
+            ("⚙️", "Settings")
         ]
         
         for icon, name in btns:
@@ -86,13 +95,16 @@ class WorkstationWindow(QWidget):
         return bar
 
     def switch_view(self, app_name):
+        # Clear existing view
         if self.left_layout.count():
             child = self.left_layout.takeAt(0)
             if child.widget():
                 child.widget().setParent(None)
         
+        # Dock new app
         if self.app_manager.dock_to_layout(app_name, self.left_layout):
             self.current_app_name = app_name
+            self.log(f"Switched to {app_name}")
         else:
             self.log(f"Error: Could not load {app_name}")
 
