@@ -8,6 +8,7 @@ import subprocess
 import shutil
 import tempfile
 import re
+import threading
 from enum import Enum
 
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QTextBrowser, QLineEdit, QPushButton, 
@@ -30,6 +31,7 @@ except ImportError:
 
 try:
     import whisper
+    import numpy as np # Required for V14 buffer math
     HAS_WHISPER = True
 except ImportError:
     HAS_WHISPER = False
@@ -69,7 +71,7 @@ class PluginManager:
         return self.plugins
 
 # ============================================================================
-# 2. STREAM WORKER (DUAL MODE: LIVE & VOD)
+# 2. STREAM WORKER (CONTINUOUS BUFFER IMPLEMENTATION)
 # ============================================================================
 
 class StreamState(Enum):
@@ -89,7 +91,7 @@ class StreamWorker(QThread):
     error_occurred = Signal(str)
     system_log = Signal(str) 
     title_found = Signal(str)
-    progress_update = Signal(int) # For VOD mode
+    progress_update = Signal(int)
 
     def __init__(self, url, config):
         super().__init__()
@@ -104,6 +106,16 @@ class StreamWorker(QThread):
         
         self.mutex = QMutex()
         self.cond = QWaitCondition()
+        
+        # V14 Buffer Settings (Reference: recording_transcriber.py)
+        self.SAMPLE_RATE = 16000
+        self.CHUNK_DURATION = 5.0 # Seconds to process at once
+        self.OVERLAP_DURATION = 1.0 # Seconds to keep for context
+        self.N_BATCH_SAMPLES = int(self.CHUNK_DURATION * self.SAMPLE_RATE)
+        self.KEEP_SAMPLES = int(self.OVERLAP_DURATION * self.SAMPLE_RATE)
+        
+        # Smart Context
+        self.last_text = "" # To use as prompt for next chunk
 
     def set_gain(self, value): self.config['gain'] = value
     def set_volume(self, value): self.config['volume'] = value
@@ -131,10 +143,9 @@ class StreamWorker(QThread):
         self.wait()
 
     def run(self):
-        # 1. Dependency Check
         if not HAS_YTDLP or not HAS_WHISPER:
             self.status_changed.emit(StreamState.ERROR, "Missing Libraries")
-            self.system_log.emit("❌ Install: pip install yt-dlp openai-whisper deep-translator")
+            self.system_log.emit("❌ Install: pip install yt-dlp openai-whisper deep-translator numpy")
             return
 
         if not shutil.which("ffmpeg"):
@@ -142,7 +153,6 @@ class StreamWorker(QThread):
             self.system_log.emit("❌ Critical: FFmpeg not found in PATH.")
             return
 
-        # 2. Load Model
         self.status_changed.emit(StreamState.CONNECTING, "Loading AI...")
         try:
             model = get_whisper_model()
@@ -153,7 +163,6 @@ class StreamWorker(QThread):
             self.system_log.emit(f"❌ Whisper Error: {e}")
             return
 
-        # 3. Get Stream Info
         self.status_changed.emit(StreamState.CONNECTING, "Fetching Info...")
         try:
             ydl_opts = {'format': 'bestaudio/best', 'quiet': True}
@@ -168,70 +177,57 @@ class StreamWorker(QThread):
             self.system_log.emit(f"❌ yt-dlp Error: {e}")
             return
 
-        # 4. Routing based on Mode
         if self.config.get('mode') == 'video':
             self._process_vod(model)
         else:
             self._process_live(model)
 
     def _process_vod(self, model):
-        """Downloads full audio and processes it as a whole for max accuracy."""
+        """VOD Mode: Downloads entire audio first (Highest Accuracy)."""
         self.status_changed.emit(StreamState.PROCESSING_VOD, "Downloading Audio...")
-        self.system_log.emit("📥 Downloading full VOD audio for high-accuracy processing...")
+        self.system_log.emit("📥 Downloading VOD audio...")
         
         temp_dir = tempfile.gettempdir()
         audio_file = os.path.join(temp_dir, f"mio_vod_{uuid.uuid4().hex}.wav")
         
         try:
-            # Download/Convert to WAV
             cmd = [
                 'ffmpeg', '-i', self.stream_url,
-                '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', '-y',
-                '-loglevel', 'error',
+                '-vn', '-ac', '1', '-ar', str(self.SAMPLE_RATE), 
+                '-f', 'wav', '-y', '-loglevel', 'error',
                 audio_file
             ]
             subprocess.run(cmd, check=True)
             
             self.status_changed.emit(StreamState.PROCESSING_VOD, "Transcribing VOD...")
-            self.system_log.emit("🧠 Audio downloaded. Starting full transcription (this may take time)...")
             
-            # Run Whisper on the whole file
-            # Detect language setting
             src_lang = self.config.get('source_lang')
-            if src_lang == "auto": src_lang = None # Let Whisper detect
+            if src_lang == "auto": src_lang = None
             
-            result = model.transcribe(audio_file, fp16=False, language=src_lang, verbose=False)
+            # Full file transcription
+            result = model.transcribe(audio_file, fp16=False, language=src_lang)
             
-            self.system_log.emit("✅ Transcription complete. Processing segments...")
-            
-            # Process segments
             target_lang = self.config.get('target_lang', 'en')
-            translator = GoogleTranslator(source='auto', target=target_lang)
+            translator = GoogleTranslator(source='auto', target=target_lang) if HAS_TRANSLATOR else None
             
             for segment in result['segments']:
                 if not self._is_running: break
-                
                 start = segment['start']
                 text = segment['text'].strip()
                 timestamp = self._seconds_to_timestamp(start)
                 
-                # Emit Original
                 self.transcript_ready.emit(text, timestamp, start)
                 self._write_log(timestamp, "SRC", text)
                 
-                # Translate
-                if self.config.get('translate') and HAS_TRANSLATOR:
+                if self.config.get('translate') and translator:
                     try:
                         trans = translator.translate(text)
                         self.translation_ready.emit(trans, timestamp)
                         self._write_log(timestamp, f"TRN-{target_lang}", trans)
                     except: pass
-                
-                # Small delay to not freeze UI with flood of signals
-                time.sleep(0.01)
+                time.sleep(0.01) # UI throttle
                 
             self.status_changed.emit(StreamState.IDLE, "VOD Finished")
-            self.system_log.emit("✅ VOD Processing Complete.")
 
         except Exception as e:
             self.status_changed.emit(StreamState.ERROR, "VOD Error")
@@ -242,68 +238,116 @@ class StreamWorker(QThread):
                 except: pass
 
     def _process_live(self, model):
-        """Original chunk-based logic for low-latency live streams."""
+        """Live Mode: Continuous Pipe Reading with Buffer Overlap (No Cuts)."""
         self.status_changed.emit(StreamState.LISTENING, "Listening...")
         self._start_time = time.time()
-        chunk_file = os.path.join(tempfile.gettempdir(), f"mio_chunk_{uuid.uuid4().hex}.wav")
         
-        # Setup Translator
+        # Translator Setup
         target_lang = self.config.get('target_lang', 'en')
         translator = GoogleTranslator(source='auto', target=target_lang) if HAS_TRANSLATOR else None
-
-        while self._is_running:
-            self.mutex.lock()
-            if self._is_paused:
-                self.cond.wait(self.mutex)
-            self.mutex.unlock()
-            if not self._is_running: break
-
-            try:
-                # Capture 6s Chunk
-                cmd = [
-                    'ffmpeg', '-i', self.stream_url,
-                    '-t', '6', '-ac', '1', '-ar', '16000',
-                    '-f', 'wav', '-y', '-loglevel', 'error',
-                    chunk_file
-                ]
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # FFmpeg Command: Output raw s16le PCM to stdout
+        cmd = [
+            'ffmpeg', 
+            '-i', self.stream_url,
+            '-vn', # No video
+            '-ac', '1', # Mono
+            '-ar', str(self.SAMPLE_RATE), # 16000Hz
+            '-f', 's16le', # Raw PCM
+            '-acodec', 'pcm_s16le',
+            '-loglevel', 'quiet',
+            '-' # Output to Pipe
+        ]
+        
+        process = None
+        try:
+            # Start FFmpeg process
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6)
+            
+            # Initialize Audio Buffer
+            buffer = np.array([], dtype=np.float32)
+            self.last_text = ""
+            
+            # How many bytes to read? (float32 is 4 bytes, but s16le is 2 bytes)
+            # We read s16le bytes, convert to float32 normalized.
+            # 16000 samples * 2 bytes = 32000 bytes per second.
+            bytes_per_chunk = 4096 # Read in small chunks
+            
+            while self._is_running:
+                # Handle Pause
+                self.mutex.lock()
+                if self._is_paused:
+                    self.cond.wait(self.mutex)
+                self.mutex.unlock()
                 
-                if os.path.exists(chunk_file) and os.path.getsize(chunk_file) > 1000:
-                    # Visualizer Level
+                # 1. Read Raw Audio Bytes
+                raw_bytes = process.stdout.read(bytes_per_chunk)
+                if not raw_bytes: 
+                    self.system_log.emit("⚠️ Stream ended or disconnected.")
+                    break
+                
+                # 2. Convert to Normalized Float32 (Whisper Format)
+                # s16le is int16. We divide by 32768.0 to get -1.0 to 1.0 range
+                new_samples = np.frombuffer(raw_bytes, np.int16).flatten().astype(np.float32) / 32768.0
+                buffer = np.append(buffer, new_samples)
+                
+                # Visualizer Update (random sample for speed)
+                if len(new_samples) > 0:
                     gain = self.config.get('gain', 1.0)
-                    self.audio_level.emit(min(100, int(random.randint(20, 80) * gain)))
+                    amp = np.abs(new_samples).mean() * 1000 * gain
+                    self.audio_level.emit(min(100, int(amp)))
 
-                    # Transcribe
-                    src_lang = self.config.get('source_lang')
-                    if src_lang == "auto": src_lang = None
+                # 3. Process Buffer when full
+                if len(buffer) >= self.N_BATCH_SAMPLES:
+                    # Extract processing chunk
+                    samples_to_process = buffer[:self.N_BATCH_SAMPLES]
                     
-                    result = model.transcribe(chunk_file, fp16=False, language=src_lang)
-                    text = result['text'].strip()
+                    # V14 FIX: Keep overlap for next loop
+                    # Remove used samples but keep 'KEEP_SAMPLES' at the start of new buffer
+                    buffer = buffer[self.N_BATCH_SAMPLES - self.KEEP_SAMPLES:]
                     
-                    if text:
-                        timestamp_str = datetime.datetime.now().strftime("%H:%M:%S")
-                        elapsed = time.time() - self._start_time
+                    # 4. Transcribe
+                    try:
+                        src_lang = self.config.get('source_lang')
+                        if src_lang == "auto": src_lang = None
                         
-                        # Emit Original (Source Lang)
-                        self.transcript_ready.emit(text, timestamp_str, elapsed)
-                        self._write_log(timestamp_str, "SRC", text)
+                        # Use last text as prompt to maintain context
+                        result = model.transcribe(
+                            samples_to_process, 
+                            fp16=False, 
+                            language=src_lang,
+                            initial_prompt=self.last_text # Context awareness
+                        )
                         
-                        # Translate (Target Lang)
-                        if self.config.get('translate') and translator:
-                            try:
-                                translated = translator.translate(text)
-                                self.translation_ready.emit(translated, timestamp_str)
-                                self._write_log(timestamp_str, f"TRN-{target_lang}", translated)
-                            except Exception as e:
-                                self.system_log.emit(f"Trans Error: {e}")
-                
-            except Exception as e:
-                self.system_log.emit(f"Live Loop Error: {e}")
-                time.sleep(1)
+                        text = result['text'].strip()
+                        
+                        if text and len(text) > 1: # Ignore noise
+                            self.last_text = text # Update prompt context
+                            
+                            timestamp_str = datetime.datetime.now().strftime("%H:%M:%S")
+                            elapsed = time.time() - self._start_time
+                            
+                            # Emit Original
+                            self.transcript_ready.emit(text, timestamp_str, elapsed)
+                            self._write_log(timestamp_str, "SRC", text)
+                            
+                            # Translate
+                            if self.config.get('translate') and translator:
+                                try:
+                                    translated = translator.translate(text)
+                                    self.translation_ready.emit(translated, timestamp_str)
+                                    self._write_log(timestamp_str, f"TRN-{target_lang}", translated)
+                                except Exception as e:
+                                    # Fallback
+                                    self.system_log.emit(f"Translation Lag: {e}")
+                                    
+                    except Exception as e:
+                        self.system_log.emit(f"Whisper Error: {e}")
 
-        if os.path.exists(chunk_file):
-            try: os.remove(chunk_file)
-            except: pass
+        except Exception as e:
+            self.system_log.emit(f"Pipeline Error: {e}")
+        finally:
+            if process: process.terminate()
 
     def _write_log(self, timestamp, tag, text):
         path = self.config.get('log_path')
@@ -436,7 +480,7 @@ class SubtitleBox(QTextBrowser):
         cursor.mergeCharFormat(fmt)
 
 # ============================================================================
-# 3. MAIN APP (V13)
+# 3. MAIN APP (V14)
 # ============================================================================
 
 class StreamApp(BaseApp): 
@@ -517,9 +561,8 @@ class StreamApp(BaseApp):
         settings.setStyleSheet("background: rgba(30,30,40,0.5); margin: 5px; border-radius: 8px;")
         set_lay = QHBoxLayout(settings)
         
-        # Mode Toggle
         self.radio_live = QRadioButton("🔴 Live")
-        self.radio_vod = QRadioButton("🎞️ Video (VOD)")
+        self.radio_vod = QRadioButton("🎞️ VOD")
         self.radio_live.setStyleSheet("color: #ccc;")
         self.radio_vod.setStyleSheet("color: #ccc;")
         self.radio_live.setChecked(True)
@@ -527,12 +570,10 @@ class StreamApp(BaseApp):
         self.group_mode.addButton(self.radio_live)
         self.group_mode.addButton(self.radio_vod)
         
-        # Source Lang
         self.combo_src = QComboBox()
         self.combo_src.addItems(["Auto-Detect", "Japanese (ja)", "English (en)", "Spanish (es)"])
         self.combo_src.setStyleSheet("background: #222; color: white; padding: 5px; border-radius: 5px;")
         
-        # Target Lang
         self.combo_lang = QComboBox()
         self.combo_lang.addItems(["English (en)", "Japanese (ja)", "Spanish (es)", "French (fr)", "German (de)"])
         self.combo_lang.setStyleSheet("background: #222; color: white; padding: 5px; border-radius: 5px;")
@@ -540,7 +581,6 @@ class StreamApp(BaseApp):
         self.chk_log = QCheckBox("Log")
         self.chk_log.setStyleSheet("color: #ccc;")
         
-        # Audio Mix
         self.slider_gain = QSlider(Qt.Horizontal)
         self.slider_gain.setRange(0, 200); self.slider_gain.setValue(100); self.slider_gain.setFixedWidth(60)
         self.slider_gain.valueChanged.connect(self._update_gain)
@@ -636,11 +676,9 @@ class StreamApp(BaseApp):
             desktop = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
             folder = os.path.join(desktop, "Mio_Transcripts")
             os.makedirs(folder, exist_ok=True)
-            # Temp Name until Title Found
             fname = f"Stream_{datetime.datetime.now().strftime('%Y-%m-%d_%H%M')}.txt"
             self.active_log_path = os.path.join(folder, fname)
 
-        # Parse Languages
         t_lang = self.combo_lang.currentText().split('(')[-1].strip(')')
         s_lang = self.combo_src.currentText()
         if "Auto" in s_lang: s_lang = "auto"
@@ -692,13 +730,11 @@ class StreamApp(BaseApp):
         if self.active_log_path and os.path.exists(self.active_log_path):
             try:
                 folder = os.path.dirname(self.active_log_path)
-                # Clean Filename
                 safe_title = re.sub(r'[\\/*?:"<>|]', "", title).strip()
                 date = datetime.datetime.now().strftime('%Y-%m-%d')
                 new_name = f"{safe_title}_{date}.txt"
                 new_path = os.path.join(folder, new_name)
                 
-                # Handle duplicates
                 if os.path.exists(new_path):
                     new_name = f"{safe_title}_{date}_{uuid.uuid4().hex[:4]}.txt"
                     new_path = os.path.join(folder, new_name)
