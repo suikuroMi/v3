@@ -1,9 +1,11 @@
 # 🐺 Ookami Mio AI Assistant
 
 Ookami Mio is an advanced, multi-modal AI assistant designed for productivity, development, and system management. It features a modular "Skills" architecture, dynamic personality switching, and deep system integration via the Ollama AI engine.
-
 ---
 
+🛠️ **Project Status:** To get a better grasp of what this assistant can and can't do yet, please click [HERE](https://github.com/suikuroMi/v3/issues) to review the current project issues and development scope.
+
+---
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -56,6 +58,7 @@ Mio’s functionality is divided into specialized "Skill" modules registered in 
 ### 🎧 Audio & AI Hearing
 * **Whisper Integration**: High-accuracy transcription using OpenAI's Whisper model.
 * **Livestream Mode**: Real-time transcription and translation of online streams with automated SRT generation.
+* Note: The transcription is still not good enough as it sometimes it cuts the word*
 
 ---
 
