@@ -55,6 +55,13 @@ Mio’s functionality is divided into specialized "Skill" modules registered in 
 ### 🌐 Web & Media
 * **Secure Search**: Search Google with protocol-level security to prevent dangerous queries.
 * **Media Downloader**: Download videos and audio using `yt-dlp` integration.
+    * **YTDLP Feature**: For a full-featured, interactive downloader with quality selection (144p-1080p), MP3 conversion, and desktop notifications, visit the [YTDLP Repository](https://github.com/jimuelportugal/YTDLP).
+    * **Quick Setup**:
+      ```bash
+      git clone https://github.com/jimuelportugal/YTDLP
+      cd YTDLP
+      pip install -r requirements.txt
+      ```
 
 ### 🎧 Audio & AI Hearing
 * **Whisper Integration**: High-accuracy transcription using OpenAI's Whisper model.
