@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
 from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QIcon, QPixmap
 from src.ui.utils.overlay import LoadingOverlay
+from src.core.paths import get_asset_path
 
 class ModernMioPhone(QFrame):
     def __init__(self, app_manager):
@@ -92,7 +93,8 @@ class ModernMioPhone(QFrame):
         header_lay.setSpacing(10) 
         
         logo = QLabel()
-        logo_icon = QIcon("assets/miofam_logo.png")
+        logo_path = get_asset_path("mio_logo.png")
+        logo_icon = QIcon(logo_path) if logo_path else QIcon()
         logo.setPixmap(logo_icon.pixmap(QSize(40, 40)))
         logo.setStyleSheet("background: transparent;")
         
@@ -146,14 +148,16 @@ class ModernMioPhone(QFrame):
         for i, (name, icon_file) in enumerate(grid_items):
             r, c = divmod(i, 3)
             
-            # This container handles the vertical stacking of icon and text
             item_widget = QWidget()
             item_layout = QVBoxLayout(item_widget)
             item_layout.setContentsMargins(0, 0, 0, 0)
             item_layout.setSpacing(5)
             
             btn = QPushButton()
-            btn.setIcon(QIcon(f"assets/{icon_file}"))
+            icon_path = get_asset_path(icon_file)
+            if icon_path:
+                btn.setIcon(QIcon(icon_path))
+            
             btn.setIconSize(QSize(60, 60))
             btn.setFixedSize(70, 70)
             btn.setStyleSheet("""
@@ -172,7 +176,6 @@ class ModernMioPhone(QFrame):
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet("color: white; font-size: 11px; background: transparent;")
             
-            # Stack the icon (button) on top of the label
             item_layout.addWidget(btn, alignment=Qt.AlignCenter)
             item_layout.addWidget(lbl, alignment=Qt.AlignCenter)
             
