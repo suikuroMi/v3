@@ -1,7 +1,9 @@
 import datetime
+import os
 from PySide6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel, 
                                QStackedWidget, QPushButton, QScrollArea, QWidget, QGridLayout)
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtGui import QIcon, QPixmap
 from src.ui.utils.overlay import LoadingOverlay
 
 class ModernMioPhone(QFrame):
@@ -10,9 +12,7 @@ class ModernMioPhone(QFrame):
         self.app_manager = app_manager
         self.app_history = [] 
         self.setup_ui()
-        self.init_home()
-        
-        # Overlay
+        self.init_home() 
         self.overlay = LoadingOverlay(self)
         
     def setup_ui(self):
@@ -28,13 +28,14 @@ class ModernMioPhone(QFrame):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
         
+        # --- STATUS BAR ---
         status_bar = QHBoxLayout()
         status_bar.setContentsMargins(20, 10, 20, 5)
         self.time_lbl = QLabel("00:00")
         self.time_lbl.setStyleSheet("color: white; font-weight: bold; font-family: monospace;")
         status_bar.addWidget(self.time_lbl)
         status_bar.addStretch()
-        status_bar.addWidget(QLabel("🐺 5G", styleSheet="color: #00ff88; font-weight: bold; font-size: 10px;"))
+        status_bar.addWidget(QLabel("🐺 5G", styleSheet="color: #429AFF; font-weight: bold; font-size: 10px;"))
         self.main_layout.addLayout(status_bar)
         
         self.clock_timer = QTimer(self)
@@ -44,6 +45,7 @@ class ModernMioPhone(QFrame):
         self.stack = QStackedWidget()
         self.main_layout.addWidget(self.stack)
         
+        # --- NAVIGATION BAR ---
         nav_bar = QFrame()
         nav_bar.setFixedHeight(70)
         nav_bar.setStyleSheet("background: #151520; border-radius: 0 0 30px 30px; border-top: 1px solid #222;")
@@ -62,71 +64,128 @@ class ModernMioPhone(QFrame):
         nav_lay.addWidget(btn_back)
         nav_lay.addWidget(btn_home)
         nav_lay.addWidget(btn_chat)
-        
         self.main_layout.addWidget(nav_bar)
 
     def create_nav_btn(self, text, is_home=False):
         btn = QPushButton(text)
         size = 50 if is_home else 40
         btn.setFixedSize(size, size)
-        border = "2px solid #555" if is_home else "none"
+        border = "2px solid #429AFF" if is_home else "none"
         btn.setStyleSheet(f"QPushButton {{ color: white; font-size: 20px; background: transparent; border: {border}; border-radius: {size//2}px; }}")
         return btn
 
     def init_home(self):
+        """Standardizes home screen initialization."""
         self.home_screen = self.create_home_screen()
-        self.stack.addWidget(self.home_screen) 
-        for app in self.app_manager.apps.values():
-            if hasattr(app, 'navigation_signal'):
-                app.navigation_signal.connect(self.handle_navigation)
+        self.stack.addWidget(self.home_screen)
 
     def create_home_screen(self):
         widget = QWidget()
         lay = QVBoxLayout(widget)
-        wel = QLabel("🐺\nOOKAMI OS")
-        wel.setAlignment(Qt.AlignCenter)
-        wel.setStyleSheet("font-size: 20px; color: white; font-weight: bold; margin: 20px;")
-        lay.addWidget(wel)
+        lay.setContentsMargins(0, 10, 0, 0)
+        lay.setSpacing(0)
         
+        # --- HEADER SECTION (MASCOT + TEXT) ---
+        header_container = QWidget()
+        header_lay = QHBoxLayout(header_container)
+        header_lay.setContentsMargins(30, 20, 30, 10)
+        header_lay.setSpacing(10) 
+        
+        logo = QLabel()
+        logo_icon = QIcon("assets/miofam_logo.png")
+        logo.setPixmap(logo_icon.pixmap(QSize(40, 40)))
+        logo.setStyleSheet("background: transparent;")
+        
+        wel = QLabel("Mio-fam")
+        wel.setStyleSheet("""
+            QLabel {
+                font-size: 18px;
+                font-weight: 800;
+                color: #429AFF;
+                letter-spacing: 3px;
+                background: transparent;
+                font-family: 'Segoe UI', sans-serif;
+            }
+        """)
+        
+        header_lay.addWidget(logo)
+        header_lay.addWidget(wel)
+        header_lay.addStretch() 
+        lay.addWidget(header_container)
+
+        # --- SEPARATOR LINE ---
+        line = QFrame()
+        line.setFixedHeight(2)
+        line.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #429AFF, stop:0.5 rgba(66, 154, 255, 50), stop:1 transparent);
+            border: none;
+            margin-left: 30px;
+        """)
+        lay.addWidget(line)
+        
+        # --- APP GRID (MOBILE STYLE) ---
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("background: transparent; border: none;")
         
         grid_container = QWidget()
         grid = QGridLayout(grid_container)
-        grid.setSpacing(15)
+        grid.setContentsMargins(20, 20, 20, 20)
+        grid.setSpacing(20)
         
         grid_items = [
-            ("Chat", "chat.png", "#3EA6FF"), ("Files", "folder.png", "#FFC107"),
-            ("System", "cpu.png", "#4CAF50"), ("Dev", "code.png", "#2196F3"),
-            ("Git", "git.png", "#F4511E"), ("Database", "database.png", "#009688"),
-            ("Voice", "mic.png", "#E91E63"), ("Stream", "stream.png", "#9C27B0"),
-            ("Transcriber", "transcribe.png", "#673AB7"), ("Web", "globe.png", "#03A9F4"),
-            ("Clock", "clock.png", "#FF9800"), ("Settings", "settings.png", "#607D8B"),
+            ("Chat", "chat.png"), ("Files", "Explorer.png"),
+            ("System", "system.png"), ("Dev", "code.png"),
+            ("Git", "git.png"), ("Database", "database.png"),
+            ("Voice", "mic.png"), ("Stream", "stream.png"),
+            ("Transcriber", "transcribe.png"), ("Web", "web.png"),
+            ("Clock", "clock.png"), ("Settings", "settings.png"),
         ]
         
-        for i, (name, icon, col) in enumerate(grid_items):
+        for i, (name, icon_file) in enumerate(grid_items):
             r, c = divmod(i, 3)
-            btn = QPushButton(f"\n{name}")
-            btn.setFixedSize(90, 90)
-            btn.setStyleSheet(f"background-color: {col}20; border: 1px solid {col}40; border-radius: 20px; color: white;")
+            
+            # This container handles the vertical stacking of icon and text
+            item_widget = QWidget()
+            item_layout = QVBoxLayout(item_widget)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(5)
+            
+            btn = QPushButton()
+            btn.setIcon(QIcon(f"assets/{icon_file}"))
+            btn.setIconSize(QSize(60, 60))
+            btn.setFixedSize(70, 70)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: rgba(66, 154, 255, 20);
+                    border-radius: 15px;
+                }
+            """)
             btn.clicked.connect(lambda ch, n=name: self.switch_app_by_name(n))
-            grid.addWidget(btn, r, c)
+            
+            lbl = QLabel(name)
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet("color: white; font-size: 11px; background: transparent;")
+            
+            # Stack the icon (button) on top of the label
+            item_layout.addWidget(btn, alignment=Qt.AlignCenter)
+            item_layout.addWidget(lbl, alignment=Qt.AlignCenter)
+            
+            grid.addWidget(item_widget, r, c)
 
         scroll.setWidget(grid_container)
         lay.addWidget(scroll)
+        
         return widget
 
     def switch_app_by_name(self, name):
-        if self.stack.currentIndex() != 0: 
-            self.app_history.append(self.stack.currentIndex())
+        if self.stack.currentIndex() != 0: self.app_history.append(self.stack.currentIndex())
         self.app_manager.dock_to_stack(name, self.stack)
-
-    def get_active_app_name(self):
-        curr = self.stack.currentWidget()
-        if curr == self.home_screen: return "Home"
-        if hasattr(curr, '_app_name'): return curr._app_name
-        return "Home"
 
     def go_home(self):
         self.app_history.clear()
@@ -136,10 +195,6 @@ class ModernMioPhone(QFrame):
         if self.app_history: self.stack.setCurrentIndex(self.app_history.pop())
         else: self.stack.setCurrentIndex(0)
 
-    def handle_navigation(self, action):
-        if action == "back": self.go_back()
-        elif action == "home": self.go_home()
-        
     def resizeEvent(self, event):
         if self.overlay.isVisible(): self.overlay.resize(self.size())
         super().resizeEvent(event)
