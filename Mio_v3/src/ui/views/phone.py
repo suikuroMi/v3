@@ -94,9 +94,11 @@ class ModernMioPhone(QFrame):
         
         logo = QLabel()
         logo_path = get_asset_path("mio_logo.png")
-        logo_icon = QIcon(logo_path) if logo_path else QIcon()
-        logo.setPixmap(logo_icon.pixmap(QSize(40, 40)))
-        logo.setStyleSheet("background: transparent;")
+        if logo_path and os.path.exists(logo_path):
+            logo.setPixmap(QIcon(logo_path).pixmap(QSize(40, 40)))
+        else:
+            logo.setText("🐺") # Fallback
+        logo.setStyleSheet("background: transparent; color: white; font-size: 24px;")
         
         wel = QLabel("Mio-fam")
         wel.setStyleSheet("""
@@ -142,7 +144,7 @@ class ModernMioPhone(QFrame):
             ("Git", "git.png"), ("Database", "database.png"),
             ("Voice", "mic.png"), ("Stream", "stream.png"),
             ("Transcriber", "transcribe.png"), ("Web", "web.png"),
-            ("Clock", "clock.png"), ("Settings", "settings.png"),
+            ("Downloader", "download.png"), ("Settings", "settings.png"),
         ]
         
         for i, (name, icon_file) in enumerate(grid_items):
@@ -155,8 +157,10 @@ class ModernMioPhone(QFrame):
             
             btn = QPushButton()
             icon_path = get_asset_path(icon_file)
-            if icon_path:
+            if icon_path and os.path.exists(icon_path):
                 btn.setIcon(QIcon(icon_path))
+            else:
+                btn.setText(name[:1]) # Fallback text
             
             btn.setIconSize(QSize(60, 60))
             btn.setFixedSize(70, 70)
@@ -164,6 +168,9 @@ class ModernMioPhone(QFrame):
                 QPushButton {
                     background-color: transparent;
                     border: none;
+                    color: white;
+                    font-size: 24px;
+                    font-weight: bold;
                 }
                 QPushButton:hover {
                     background-color: rgba(66, 154, 255, 20);
@@ -189,6 +196,17 @@ class ModernMioPhone(QFrame):
     def switch_app_by_name(self, name):
         if self.stack.currentIndex() != 0: self.app_history.append(self.stack.currentIndex())
         self.app_manager.dock_to_stack(name, self.stack)
+
+    # --- FIX: This method was missing causing the crash ---
+    def get_active_app_name(self):
+        """Returns the name of the currently visible app, or 'Home'."""
+        current = self.stack.currentWidget()
+        if current == self.home_screen:
+            return "Home"
+        # Assuming apps have an internal _app_name attribute set by Manager
+        if hasattr(current, '_app_name'):
+            return current._app_name
+        return "Unknown"
 
     def go_home(self):
         self.app_history.clear()

@@ -4,7 +4,7 @@ import logging
 import subprocess
 from PySide6.QtWidgets import (QApplication, QWidget, QHBoxLayout, QLabel, QMenu, QGraphicsOpacityEffect)
 from PySide6.QtCore import Qt, QTimer, QSize, QSettings, QPoint, QRect, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QCursor
+from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QCursor, QGuiApplication
 
 from src.agent.llm_engine import BrainEngine
 from src.core.paths import get_asset_path
@@ -73,8 +73,8 @@ class MascotWidget(QWidget):
         
         self.set_pose("idle") 
         
-        # Start in Companion Mode
-        self.setup_companion_mode()
+        # FIX 1: Start in AVATAR_ONLY mode by default to prevent large UI spawn issues
+        self.setup_avatar_mode()
         
         # Shortcuts
         self._init_shortcuts()
@@ -94,12 +94,9 @@ class MascotWidget(QWidget):
         self.anim.setEndValue(1.0)
         self.anim.start()
 
-    # --- PIN-POINT ANCHORING SYSTEM (V17) ---
+    # --- PIN-POINT ANCHORING SYSTEM ---
     def _capture_pin(self):
-        """
-        Records the GLOBAL screen position of the Avatar's Bottom-Right pixel.
-        This effectively 'pins' Mio to that pixel on your monitor.
-        """
+        """Records the GLOBAL screen position of the Avatar's Bottom-Right pixel."""
         if self.avatar.isVisible():
             # Get bottom-right corner of the AVATAR WIDGET specifically
             local_pin = self.avatar.rect().bottomRight()
@@ -107,9 +104,7 @@ class MascotWidget(QWidget):
         return None
 
     def _restore_pin(self, target_pin):
-        """
-        Moves the window so the Avatar's Bottom-Right pixel lands back on target_pin.
-        """
+        """Moves the window so the Avatar's Bottom-Right pixel lands back on target_pin."""
         if not target_pin: return
         
         # 1. Force layout update so we have correct new local coordinates
@@ -125,6 +120,26 @@ class MascotWidget(QWidget):
         # 4. Move the window by that shift
         if delta.manhattanLength() > 0:
             self.move(self.pos() + delta)
+            self._ensure_on_screen()
+
+    def _ensure_on_screen(self):
+        """FIX 2: Forces the window to stay within visible screen bounds."""
+        screen = QGuiApplication.primaryScreen().availableGeometry()
+        geo = self.geometry()
+        
+        # If completely off-screen, reset to safe position
+        if not screen.intersects(geo):
+            new_x = screen.width() - geo.width() - 50
+            new_y = screen.height() - geo.height() - 50
+            self.move(new_x, new_y)
+            return
+
+        # Clamp to edges
+        x = max(screen.left(), min(geo.x(), screen.right() - geo.width()))
+        y = max(screen.top(), min(geo.y(), screen.bottom() - geo.height()))
+        
+        if x != geo.x() or y != geo.y():
+            self.move(x, y)
 
     def setup_companion_mode(self):
         if self.mode == "COMPANION": return
@@ -217,9 +232,12 @@ class MascotWidget(QWidget):
             geo = self.settings.value("geometry")
             if geo: self.restoreGeometry(geo)
 
-            if self.mode != "COMPANION":
-                self.mode = None 
-                self.setup_companion_mode()
+            # FIX 3: Force Avatar Mode on startup so she doesn't span off-screen
+            self.mode = None 
+            self.setup_avatar_mode()
+            
+            # Safety check to pull back on screen if needed
+            self._ensure_on_screen()
 
             last_phone = self.settings.value("last_phone_app")
             if last_phone and last_phone != "Home":
@@ -230,7 +248,7 @@ class MascotWidget(QWidget):
         except Exception as e:
             logger.error(f"State load error: {e}")
             self.mode = None
-            self.setup_companion_mode()
+            self.setup_avatar_mode()
 
     def closeEvent(self, event):
         self.settings.setValue("mode", self.mode)

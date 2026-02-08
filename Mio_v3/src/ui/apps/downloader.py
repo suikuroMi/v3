@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
                                QLabel, QFrame, QWidget, QComboBox, QCheckBox, 
                                QProgressBar, QTabWidget, QTextBrowser, QFileDialog,
                                QScrollArea, QSplitter, QMessageBox, QGroupBox, QTableWidget, 
-                               QTableWidgetItem, QHeaderView, QMenu, QAbstractItemView, QTimeEdit, QDialog)
-from PySide6.QtCore import Qt, Signal, QThread, QSettings, QStandardPaths, QUrl, QTimer, QTime
+                               QTableWidgetItem, QHeaderView, QMenu, QAbstractItemView, QTimeEdit, QDialog, QDateEdit)
+from PySide6.QtCore import Qt, Signal, QThread, QSettings, QStandardPaths, QUrl, QTimer, QTime, QDate
 from PySide6.QtGui import QDesktopServices, QIcon, QAction, QColor, QBrush
 
 from .base import BaseApp
@@ -85,86 +85,168 @@ class DataManager:
 
 def get_ytdlp_cmd():
     """Smartly returns the command to run yt-dlp (exe or python module)."""
-    # 1. Check for standalone executable in PATH
-    if shutil.which("yt-dlp"):
-        return ["yt-dlp"]
-    
-    # 2. Check for standalone executable in current dir
+    if shutil.which("yt-dlp"): return ["yt-dlp"]
     local = os.path.join(os.getcwd(), "yt-dlp.exe" if sys.platform == "win32" else "yt-dlp")
-    if os.path.exists(local):
-        return [local]
-        
-    # 3. Fallback: Run as Python Module (since user pip installed it)
+    if os.path.exists(local): return [local]
     return [sys.executable, "-m", "yt_dlp"]
+
+class CookieValidatorWorker(QThread):
+    finished = Signal(bool, str)
+    def __init__(self, cmd_prefix, cookie_path):
+        super().__init__()
+        self.cmd_prefix = cmd_prefix
+        self.cookie_path = cookie_path
+    def run(self):
+        if not os.path.exists(self.cookie_path):
+            self.finished.emit(False, "Cookie file not found")
+            return
+        cmd = self.cmd_prefix + [
+            "--cookies", self.cookie_path,
+            "--simulate", "--dump-json",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 
+        ]
+        try:
+            creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=creation_flags)
+            if "Sign in" in proc.stderr: self.finished.emit(False, "Cookies Expired / Invalid")
+            elif proc.returncode == 0: self.finished.emit(True, "Cookies Valid")
+            else: self.finished.emit(False, f"Check Failed: {proc.stderr[:100]}")
+        except Exception as e: self.finished.emit(False, str(e))
+
+class ScrapeWorker(QThread):
+    found_item = Signal(str, str) # url, title
+    finished = Signal(bool, str, int) # success, msg, count
+
+    def __init__(self, cmd_prefix, url, config, max_items=0):
+        super().__init__()
+        self.cmd_prefix = cmd_prefix
+        self.url = url
+        self.config = config
+        self.max_items = max_items
+        self._is_running = True
+
+    def run(self):
+        # Base command
+        cmd = self.cmd_prefix + ["--dump-json", "--skip-download", "--no-warnings"]
+        
+        # Optimization: Use flat-playlist ONLY if we are NOT doing complex filtering that requires metadata
+        # If user wants "Streams Only", we need metadata (was_live), so we drop flat-playlist to get full data.
+        complex_filter = self.config.get('content_filter', 'All') != 'All'
+        if not complex_filter:
+            cmd += ["--flat-playlist"]
+        
+        # Limits
+        if self.max_items > 0: cmd += ["--playlist-end", str(self.max_items)]
+        
+        # --- FILTERS ---
+        filters = []
+        
+        # 1. Shorts
+        if self.config.get('ignore_shorts'): 
+            filters.append("original_url!*=/shorts/ & url!*=/shorts/")
+            
+        # 2. Content Type (V13)
+        ctype = self.config.get('content_filter', 'All')
+        if ctype == "Uploaded Videos Only":
+            # Not live AND not was live
+            filters.append("!is_live & !was_live")
+        elif ctype == "Live Streams / VODs Only":
+            # Is live OR was live
+            filters.append("is_live | was_live")
+        elif ctype == "Members/Premium Only":
+            # Availability check
+            filters.append("availability=subscriber_only")
+
+        if filters:
+            match_string = " & ".join([f"({f})" for f in filters])
+            cmd += ["--match-filter", match_string]
+        
+        # Date Filters
+        if self.config.get('date_after'): cmd += ["--dateafter", self.config['date_after']]
+        if self.config.get('date_before'): cmd += ["--datebefore", self.config['date_before']]
+
+        # Auth
+        if self.config.get('cookies') and self.config.get('cookies_file'):
+            cmd += ["--cookies", self.config['cookies_file']]
+
+        cmd.append(self.url)
+
+        count = 0
+        try:
+            creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            process = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
+                text=True, creationflags=creation_flags
+            )
+            
+            for line in process.stdout:
+                if not self._is_running: process.terminate(); break
+                try:
+                    data = json.loads(line)
+                    url = data.get('url')
+                    title = data.get('title', 'Unknown')
+                    if url:
+                        if "youtube" in self.url or len(url) == 11: 
+                            if "://" not in url: url = f"https://www.youtube.com/watch?v={url}"
+                        self.found_item.emit(url, title)
+                        count += 1
+                except: pass
+            
+            process.wait()
+            if process.returncode == 0: self.finished.emit(True, "Scrape Complete", count)
+            else: self.finished.emit(False, "Scrape Stopped/Failed", count)
+
+        except Exception as e:
+            self.finished.emit(False, str(e), count)
+
+    def stop(self):
+        self._is_running = False
 
 class UpdateWorker(QThread):
     finished = Signal(bool, str)
-
     def __init__(self, cmd_prefix):
         super().__init__()
         self.cmd_prefix = cmd_prefix
-
     def run(self):
         try:
-            # Check if running as python module or exe
             if self.cmd_prefix[0] == sys.executable:
-                # PIP UPDATE
                 cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
             else:
-                # EXE SELF-UPDATE
                 cmd = self.cmd_prefix + ["-U"]
-                
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=creation_flags)
-            
-            if proc.returncode == 0:
-                self.finished.emit(True, f"Update Result:\n{proc.stdout}")
-            else:
-                self.finished.emit(False, f"Update Failed:\n{proc.stderr}")
-        except Exception as e:
-            self.finished.emit(False, str(e))
+            if proc.returncode == 0: self.finished.emit(True, f"Update Result:\n{proc.stdout}")
+            else: self.finished.emit(False, f"Update Failed:\n{proc.stderr}")
+        except Exception as e: self.finished.emit(False, str(e))
 
 class TestWorker(QThread):
     finished = Signal(bool, str, dict)
-
     def __init__(self, cmd_prefix, url, config):
         super().__init__()
         self.cmd_prefix = cmd_prefix
         self.url = url
         self.config = config
-
     def run(self):
-        # V7: Use prefix list instead of single exe string
         cmd = self.cmd_prefix + ["--simulate", "--no-warnings", "--dump-json", self.url]
-        
         if self.config.get('cookies') and self.config.get('cookies_file'):
             cmd += ["--cookies", self.config['cookies_file']]
-        
         src = self.config.get('source', 'Normal')
-        if src == "SPWN":
-            cmd += ["--user-agent", "Mozilla/5.0... Firefox/142.0", "--referer", "https://spwn.jp/"]
-        elif src == "YouTube":
-            cmd += ["--user-agent", "Mozilla/5.0... AppleWebKit/537.36"]
-        elif src == "Twitter":
-            cmd += ["--add-header", "Referer:https://twitter.com/"]
-        
+        if src == "SPWN": cmd += ["--user-agent", "Mozilla/5.0...", "--referer", "https://spwn.jp/", "--hls-prefer-ffmpeg"]
+        elif src == "YouTube": cmd += ["--user-agent", "Mozilla/5.0..."]
+        elif src == "Twitter": cmd += ["--add-header", "Referer:https://twitter.com/"]
         if self.config.get('proxy'): cmd += ["--proxy", self.config['proxy']]
-
         try:
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             process = subprocess.run(cmd, capture_output=True, text=True, creationflags=creation_flags)
-            if process.returncode == 0:
-                self.finished.emit(True, "Access Granted", json.loads(process.stdout))
-            else:
-                self.finished.emit(False, f"Access Denied: {process.stderr[:200]}...", {})
-        except Exception as e:
-            self.finished.emit(False, str(e), {})
+            if process.returncode == 0: self.finished.emit(True, "Access Granted", json.loads(process.stdout))
+            else: self.finished.emit(False, f"Access Denied: {process.stderr[:200]}...", {})
+        except Exception as e: self.finished.emit(False, str(e), {})
 
 class DownloadWorker(QThread):
     progress_updated = Signal(float, str) 
     log_updated = Signal(str)
     status_changed = Signal(DownloadState)
-    finished = Signal(bool, str, str) # success, msg, file_title
+    finished = Signal(bool, str, str)
 
     def __init__(self, url, config):
         super().__init__()
@@ -182,16 +264,13 @@ class DownloadWorker(QThread):
 
     def run(self):
         self.status_changed.emit(DownloadState.PREPARING)
-        
-        # V7: Get robust command prefix
         yt_cmd = get_ytdlp_cmd()
         self.log_updated.emit(f"Using engine: {' '.join(yt_cmd)}")
-
         self.status_changed.emit(DownloadState.DOWNLOADING)
+        
         cmd = self._build_command(yt_cmd, self.url)
         current_title = "Unknown"
         success = False
-
         try:
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             self.process = subprocess.Popen(
@@ -199,61 +278,55 @@ class DownloadWorker(QThread):
                 text=True, bufsize=1, universal_newlines=True,
                 creationflags=creation_flags
             )
-
             for line in iter(self.process.stdout.readline, ''):
-                if not self._is_running: 
-                    self.process.terminate(); break
+                if not self._is_running: self.process.terminate(); break
                 line = line.strip()
                 if not line: continue
-                
                 self.log_updated.emit(line)
                 self._parse_progress(line)
-                
                 if "[download] Destination:" in line:
                     current_title = os.path.basename(line.split(":", 1)[1].strip())
-
             self.process.wait()
             success = (self.process.returncode == 0)
-            
-        except Exception as e:
-            self.log_updated.emit(f"Error: {str(e)}")
-
+        except Exception as e: self.log_updated.emit(f"Error: {str(e)}")
         self.status_changed.emit(DownloadState.FINISHED if success else DownloadState.ERROR)
         self.finished.emit(success, "Completed" if success else "Failed", current_title)
 
     def _build_command(self, prefix, url):
         c = self.config
-        cmd = prefix.copy() # Start with [python, -m, yt_dlp] or [yt-dlp]
-
-        # Template
-        tmpl = c.get('template', '%(title)s.%(ext)s')
-        out_tmpl = os.path.join(c['path'], tmpl)
-        cmd += ["-o", out_tmpl]
+        cmd = prefix.copy()
         
-        # Archive & Recovery
+        path_parts = []
+        if c.get('separate_members'): path_parts.append("%(availability)s")
+        if c.get('separate_type'): path_parts.append("%(was_live&Streams|Videos)s")
+        if c.get('org_year'): path_parts.append("%(upload_date>%Y)s")
+        if c.get('org_month'): path_parts.append("%(upload_date>%m)s")
+        if c.get('org_week'): path_parts.append("Week_%(upload_date>%W)s")
+            
+        tmpl = c.get('template', '%(upload_date>%Y-%m-%d)s_%(title)s.%(ext)s')
+        path_parts.append(tmpl)
+        
+        full_template = "/".join(path_parts)
+        out_path = os.path.join(c['path'], full_template)
+        cmd += ["-o", out_path]
+        
         archive_file = os.path.join(c['path'], "archive.txt")
         cmd += ["--download-archive", archive_file]
         cmd += ["--ignore-errors", "--no-abort-on-error"]
+        cmd += ["--retries", "infinite", "--fragment-retries", "infinite", "--retry-sleep", "fragment:exp=1:30"]
+        
+        if c['cookies'] and c['cookies_file']: cmd += ["--cookies", c['cookies_file']]
+        if c['source'] == "SPWN": cmd += ["--user-agent", "Mozilla/5.0...", "--referer", "https://spwn.jp/", "--hls-prefer-ffmpeg"]
+        elif c['source'] == "YouTube": cmd += ["--user-agent", "Mozilla/5.0..."]
+        elif c['source'] == "Twitter": cmd += ["--add-header", "Referer:https://twitter.com/"]
+        elif c['source'] == "Bilibili": cmd += ["--referer", "https://www.bilibili.com/"]
 
-        # Auth
-        if c['cookies'] and c['cookies_file']:
-            cmd += ["--cookies", c['cookies_file']]
-
-        # Sources
-        if c['source'] == "SPWN":
-            cmd += ["--user-agent", "Mozilla/5.0...", "--referer", "https://spwn.jp/", "--hls-prefer-ffmpeg"]
-        elif c['source'] == "YouTube":
-            cmd += ["--user-agent", "Mozilla/5.0... AppleWebKit/537.36", "--extractor-args", "youtube:player_client=web"]
-        elif c['source'] == "Twitter":
-            cmd += ["--add-header", "Referer:https://twitter.com/"]
-        elif c['source'] == "Bilibili":
-            cmd += ["--referer", "https://www.bilibili.com/"]
-
-        # Network
         if c.get('proxy'): cmd += ["--proxy", c['proxy']]
         if c.get('rate_limit'): cmd += ["--limit-rate", c['rate_limit']]
+        
+        if c.get('date_after'): cmd += ["--dateafter", c['date_after']]
+        if c.get('date_before'): cmd += ["--datebefore", c['date_before']]
 
-        # Format
         if c['format'] == 'mp3':
             cmd += ["-x", "--audio-format", "mp3", "--audio-quality", c['quality'].replace("k", "K")]
         else:
@@ -269,7 +342,6 @@ class DownloadWorker(QThread):
         if c.get('playlist', False): cmd += ["--yes-playlist"]
         else: cmd += ["--no-playlist"]
 
-        # Metadata & Subs
         if c['metadata']: cmd.append("--add-metadata")
         if c['thumbnail']: cmd.append("--embed-thumbnail")
         if c['subtitles']: 
@@ -277,22 +349,19 @@ class DownloadWorker(QThread):
             if c.get('sub_langs'): cmd += ["--sub-langs", c['sub_langs']]
             else: cmd.append("--write-auto-sub")
 
-        cmd += ["--concurrent-fragments", "4", "--retries", "10"]
+        cmd += ["--concurrent-fragments", "4"]
         cmd.append(url)
         return cmd
 
     def _parse_progress(self, line):
-        # Parses [download] 45.0% of 10.00MiB at 2.50MiB/s ETA 00:05
         match = re.search(r'\[download\]\s+(\d+\.\d+)%', line)
         if match:
             percent = float(match.group(1))
             speed = re.search(r'at\s+([0-9.]+\w+/s)', line)
             eta = re.search(r'ETA\s+([0-9:]+)', line)
-            
             info = f"{percent}%"
             if speed: info += f" | {speed.group(1)}"
             if eta: info += f" | ETA {eta.group(1)}"
-            
             self.progress_updated.emit(percent, info)
 
 # ============================================================================
@@ -305,10 +374,9 @@ class DownloaderApp(BaseApp):
         self.settings = QSettings("Ookami", "Downloader")
         self.data_manager = DataManager()
         self.worker = None
-        self.test_worker = None
-        self.update_worker = None
+        self.scrape_worker = None
+        self.cookie_worker = None
         
-        # Queue System
         self.queue = self.data_manager.queue
         self.is_processing_queue = False
         self.queue_paused = False
@@ -326,6 +394,7 @@ class DownloaderApp(BaseApp):
         """)
         
         self.tabs.addTab(self._create_download_tab(), "Single Download")
+        self.tabs.addTab(self._create_scraper_tab(), "Channel Scraper") 
         self.tabs.addTab(self._create_queue_tab(), "Queue Manager")
         self.tabs.addTab(self._create_history_tab(), "History")
         self.tabs.addTab(self._create_settings_tab(), "Settings")
@@ -334,7 +403,6 @@ class DownloaderApp(BaseApp):
     def _create_download_tab(self):
         w = QWidget(); l = QVBoxLayout(w)
         
-        # URL
         url_frame = QFrame(); url_frame.setStyleSheet("background: #252530; border-radius: 8px; padding: 10px;")
         ul = QVBoxLayout(url_frame)
         r1 = QHBoxLayout()
@@ -345,13 +413,10 @@ class DownloaderApp(BaseApp):
         
         r2 = QHBoxLayout()
         self.combo_source = QComboBox(); self.combo_source.addItems(["Normal", "YouTube", "SPWN", "Twitter", "Bilibili"])
-        self.chk_playlist = QCheckBox("Playlist"); self.chk_playlist.setToolTip("Process entire playlist")
-        
+        self.chk_playlist = QCheckBox("Playlist") 
         self.combo_preset = QComboBox(); self.combo_preset.addItems(PRESETS.keys())
         self.combo_preset.currentTextChanged.connect(self._apply_preset)
-        
         btn_test = QPushButton("Test Access"); btn_test.clicked.connect(self.test_access)
-        
         r2.addWidget(QLabel("Preset:")); r2.addWidget(self.combo_preset)
         r2.addWidget(QLabel("Source:")); r2.addWidget(self.combo_source)
         r2.addWidget(self.chk_playlist)
@@ -360,24 +425,7 @@ class DownloaderApp(BaseApp):
         ul.addLayout(r1); ul.addLayout(r2)
         l.addWidget(url_frame)
         
-        # Auth
-        auth_grp = QGroupBox("Authentication"); auth_grp.setStyleSheet("color: #aaa; border: 1px solid #444; margin-top: 5px;")
-        al = QHBoxLayout(auth_grp)
-        self.chk_cookies = QCheckBox("Use Cookies"); self.chk_cookies.toggled.connect(lambda c: self.path_cookies.setEnabled(c))
-        self.path_cookies = QLineEdit(); self.path_cookies.setPlaceholderText("cookies.txt path..."); self.path_cookies.setEnabled(False)
-        btn_bc = QPushButton("Browse"); btn_bc.clicked.connect(self._browse_cookies)
-        btn_help = QPushButton("Get Cookies"); btn_help.clicked.connect(self._open_cookie_help)
-        al.addWidget(self.chk_cookies); al.addWidget(self.path_cookies); al.addWidget(btn_bc); al.addWidget(btn_help)
-        l.addWidget(auth_grp)
-        
-        # Path & Opts
-        pl = QHBoxLayout()
-        self.path_input = QLineEdit(); self.path_input.setPlaceholderText("Output Folder...")
-        btn_bp = QPushButton("📂"); btn_bp.clicked.connect(self._browse_folder)
-        btn_open = QPushButton("Open"); btn_open.clicked.connect(self._open_folder)
-        pl.addWidget(self.path_input); pl.addWidget(btn_bp); pl.addWidget(btn_open)
-        l.addLayout(pl)
-        
+        # Batch Config Group (Single)
         opts = QFrame(); opts.setStyleSheet("background: #252530; border-radius: 8px; padding: 5px;")
         ol = QHBoxLayout(opts)
         self.combo_format = QComboBox(); self.combo_format.addItems(["mp4", "mp3", "m4a", "mkv"])
@@ -390,24 +438,22 @@ class DownloaderApp(BaseApp):
         ol.addWidget(self.chk_meta); ol.addWidget(self.chk_thumb); ol.addWidget(self.chk_subs)
         l.addWidget(opts)
         
-        # Advanced (V6)
-        adv_layout = QHBoxLayout()
-        self.sub_lang = QLineEdit(); self.sub_lang.setPlaceholderText("Sub Langs (e.g. en,ja)...")
-        adv_layout.addWidget(QLabel("Subs:"))
-        adv_layout.addWidget(self.sub_lang)
-        l.addLayout(adv_layout)
+        # Path
+        pl = QHBoxLayout()
+        self.path_input = QLineEdit(); self.path_input.setPlaceholderText("Output Folder...")
+        btn_bp = QPushButton("📂"); btn_bp.clicked.connect(self._browse_folder)
+        btn_open = QPushButton("Open"); btn_open.clicked.connect(self._open_folder)
+        pl.addWidget(self.path_input); pl.addWidget(btn_bp); pl.addWidget(btn_open)
+        l.addLayout(pl)
         
-        # Actions
         al = QHBoxLayout()
         self.btn_dl = QPushButton("Start Download"); self.btn_dl.clicked.connect(self.start_download)
         self.btn_dl.setStyleSheet("background: #FF5722; color: white; padding: 10px; font-weight: bold;")
         self.btn_queue = QPushButton("Add to Queue"); self.btn_queue.clicked.connect(self.add_to_queue)
-        
         self.btn_stop = QPushButton("Stop"); self.btn_stop.clicked.connect(self.stop_download); self.btn_stop.setEnabled(False)
         al.addWidget(self.btn_dl); al.addWidget(self.btn_queue); al.addWidget(self.btn_stop)
         l.addLayout(al)
         
-        # Status
         self.pbar = QProgressBar(); self.pbar.setTextVisible(False); self.pbar.setStyleSheet("QProgressBar::chunk { background: #FF5722; }")
         self.status_lbl = QLabel("Ready")
         self.log_view = QTextBrowser(); self.log_view.setStyleSheet("background: #111; color: #0f0; font-family: Consolas; font-size: 10px;")
@@ -415,77 +461,144 @@ class DownloaderApp(BaseApp):
         
         return w
 
-    def _create_queue_tab(self):
+    def _create_scraper_tab(self):
         w = QWidget(); l = QVBoxLayout(w)
         
-        # Controls
+        # URL Input
+        url_frame = QFrame(); url_frame.setStyleSheet("background: #252530; border-radius: 8px; padding: 10px;")
+        ul = QHBoxLayout(url_frame)
+        self.scrape_url = QLineEdit(); self.scrape_url.setPlaceholderText("Channel / Playlist URL to Scrape...")
+        self.scrape_url.setStyleSheet("background: #111; color: white; border: 1px solid #444; padding: 8px;")
+        self.btn_scrape = QPushButton("🕵️ Scrape to Queue")
+        self.btn_scrape.clicked.connect(self.scrape_to_queue)
+        self.btn_scrape.setStyleSheet("background: #2196F3; color: white; padding: 8px;")
+        ul.addWidget(self.scrape_url); ul.addWidget(self.btn_scrape)
+        l.addWidget(url_frame)
+        
+        # V13: Filters & Content Type
+        filt_grp = QGroupBox("Content Filters")
+        filt_grp.setStyleSheet("color: #aaa; border: 1px solid #444;")
+        fl = QHBoxLayout(filt_grp)
+        
+        self.combo_content = QComboBox()
+        self.combo_content.addItems(["All Content", "Uploaded Videos Only", "Live Streams / VODs Only", "Members/Premium Only"])
+        self.chk_ignore_shorts = QCheckBox("Ignore Shorts")
+        self.spin_max_items = QLineEdit("0"); self.spin_max_items.setPlaceholderText("Limit (0=All)")
+        self.spin_max_items.setFixedWidth(60)
+        
+        fl.addWidget(QLabel("Fetch:")); fl.addWidget(self.combo_content)
+        fl.addWidget(self.chk_ignore_shorts)
+        fl.addWidget(QLabel("Limit:")); fl.addWidget(self.spin_max_items)
+        l.addWidget(filt_grp)
+        
+        # V13: Batch Configuration (Apply to all scraped items)
+        batch_grp = QGroupBox("Download Settings for this Batch")
+        batch_grp.setStyleSheet("color: #aaa; border: 1px solid #444;")
+        bl = QHBoxLayout(batch_grp)
+        
+        self.batch_fmt = QComboBox(); self.batch_fmt.addItems(["mp4", "mp3", "m4a", "mkv"])
+        self.batch_qual = QComboBox(); self.batch_qual.addItems(["best", "1080", "720", "480"])
+        self.batch_meta = QCheckBox("Meta"); self.batch_meta.setChecked(True)
+        self.batch_thumb = QCheckBox("Thumb"); self.batch_thumb.setChecked(True)
+        self.batch_subs = QCheckBox("Subs")
+        
+        bl.addWidget(QLabel("Fmt:")); bl.addWidget(self.batch_fmt)
+        bl.addWidget(QLabel("Qual:")); bl.addWidget(self.batch_qual)
+        bl.addWidget(self.batch_meta); bl.addWidget(self.batch_thumb); bl.addWidget(self.batch_subs)
+        l.addWidget(batch_grp)
+        
+        # Organization
+        org_grp = QGroupBox("Folder Organization"); org_grp.setStyleSheet("color: #aaa; border: 1px solid #444;")
+        ol = QVBoxLayout(org_grp)
+        row_org = QHBoxLayout()
+        self.chk_org_year = QCheckBox("Year"); self.chk_org_month = QCheckBox("Month"); self.chk_org_week = QCheckBox("Week")
+        row_org.addWidget(QLabel("Sub-folders:")); row_org.addWidget(self.chk_org_year); row_org.addWidget(self.chk_org_month); row_org.addWidget(self.chk_org_week); row_org.addStretch()
+        
+        row_sep = QHBoxLayout()
+        self.chk_sep_type = QCheckBox("Separate Streams vs Videos")
+        self.chk_sep_members = QCheckBox("Separate Members Only")
+        row_sep.addWidget(self.chk_sep_type); row_sep.addWidget(self.chk_sep_members); row_sep.addStretch()
+        
+        ol.addLayout(row_org); ol.addLayout(row_sep)
+        l.addWidget(org_grp)
+        
+        # Dates
+        d_grp = QHBoxLayout()
+        self.date_after = QLineEdit(); self.date_after.setPlaceholderText("Date After (YYYYMMDD)")
+        self.date_before = QLineEdit(); self.date_before.setPlaceholderText("Date Before (YYYYMMDD)")
+        d_grp.addWidget(QLabel("Date Range:")); d_grp.addWidget(self.date_after); d_grp.addWidget(self.date_before)
+        l.addLayout(d_grp)
+        
+        l.addWidget(QLabel("Filename Template:"))
+        self.tpl_input = QLineEdit(); self.tpl_input.setText("%(upload_date>%Y-%m-%d)s_%(title)s.%(ext)s")
+        l.addWidget(self.tpl_input)
+        
+        l.addStretch()
+        return w
+
+    def _create_queue_tab(self):
+        w = QWidget(); l = QVBoxLayout(w)
+        stats_frame = QFrame(); stats_frame.setStyleSheet("background: #252530; padding: 5px; border-radius: 5px;")
+        sl = QHBoxLayout(stats_frame)
+        self.lbl_queue_progress = QLabel("Batch Progress:")
+        self.bar_queue_progress = QProgressBar(); self.bar_queue_progress.setTextVisible(True)
+        self.bar_queue_progress.setStyleSheet("QProgressBar::chunk { background: #4CAF50; }")
+        sl.addWidget(self.lbl_queue_progress); sl.addWidget(self.bar_queue_progress)
+        l.addWidget(stats_frame)
+        
         ctrl_layout = QHBoxLayout()
         self.btn_startq = QPushButton("▶ Start Queue"); self.btn_startq.clicked.connect(self.process_queue)
         self.btn_startq.setStyleSheet("background: #FF5722; color: white; font-weight: bold;")
         self.btn_pauseq = QPushButton("⏸ Pause Queue"); self.btn_pauseq.clicked.connect(self.pause_queue); self.btn_pauseq.setEnabled(False)
         btn_clear = QPushButton("🗑️ Clear"); btn_clear.clicked.connect(self.clear_queue)
         
-        # Scheduling (V6)
-        self.time_edit = QTimeEdit(); self.time_edit.setDisplayFormat("HH:mm")
-        btn_sched = QPushButton("⏰ Schedule"); btn_sched.clicked.connect(self.schedule_queue)
-        
-        # Import/Export (V6)
-        btn_imp = QPushButton("Import"); btn_imp.clicked.connect(self.import_queue)
-        btn_exp = QPushButton("Export"); btn_exp.clicked.connect(self.export_queue)
-        
         ctrl_layout.addWidget(self.btn_startq); ctrl_layout.addWidget(self.btn_pauseq); ctrl_layout.addWidget(btn_clear)
-        ctrl_layout.addSpacing(10)
-        ctrl_layout.addWidget(self.time_edit); ctrl_layout.addWidget(btn_sched)
-        ctrl_layout.addStretch()
-        ctrl_layout.addWidget(btn_imp); ctrl_layout.addWidget(btn_exp)
         l.addLayout(ctrl_layout)
         
-        # Table
-        self.queue_table = QTableWidget()
-        self.queue_table.setColumnCount(3)
+        self.queue_table = QTableWidget(); self.queue_table.setColumnCount(3)
         self.queue_table.setHorizontalHeaderLabels(["URL", "Status", "Config"])
         self.queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.queue_table.setStyleSheet("QTableWidget { background: #222; color: #ddd; selection-background-color: #444; }")
-        
-        # Drag & Drop Reordering (V6)
-        self.queue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.queue_table.setDragEnabled(True)
-        self.queue_table.setAcceptDrops(True)
-        self.queue_table.setDragDropMode(QAbstractItemView.InternalMove)
-        self.queue_table.dropEvent = self._on_queue_drop # Hook for sync
-        
+        self.queue_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.queue_table.setDragEnabled(True)
+        self.queue_table.setAcceptDrops(True); self.queue_table.setDragDropMode(QAbstractItemView.InternalMove)
+        self.queue_table.dropEvent = self._on_queue_drop
         self.queue_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.queue_table.customContextMenuRequested.connect(self._queue_menu)
-        
         l.addWidget(self.queue_table)
-        self.queue_status_lbl = QLabel("Queue Idle")
-        l.addWidget(self.queue_status_lbl)
-        
-        # Timer for scheduler
-        self.sched_timer = QTimer(self)
-        self.sched_timer.timeout.connect(self._check_schedule)
-        
+        self.queue_status_lbl = QLabel("Queue Idle"); l.addWidget(self.queue_status_lbl)
+        self.sched_timer = QTimer(self); self.sched_timer.timeout.connect(self._check_schedule)
         return w
 
     def _create_history_tab(self):
         w = QWidget(); l = QVBoxLayout(w)
-        self.history_table = QTableWidget()
-        self.history_table.setColumnCount(4)
+        self.history_table = QTableWidget(); self.history_table.setColumnCount(4)
         self.history_table.setHorizontalHeaderLabels(["Date", "Title", "Status", "Path"])
         self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.history_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.history_table.customContextMenuRequested.connect(self._history_menu)
         self.history_table.setStyleSheet("QTableWidget { background: #222; color: #ddd; }")
-        
         btn_refresh = QPushButton("Refresh"); btn_refresh.clicked.connect(self._load_history)
         btn_clear = QPushButton("Clear History"); btn_clear.clicked.connect(self._clear_history)
-        
         hl = QHBoxLayout(); hl.addWidget(btn_refresh); hl.addWidget(btn_clear)
         l.addWidget(self.history_table); l.addLayout(hl)
         return w
 
     def _create_settings_tab(self):
         w = QWidget(); l = QVBoxLayout(w)
+        auth_grp = QGroupBox("Authentication & Cookies"); auth_grp.setStyleSheet("color: white; border: 1px solid #444;")
+        al = QVBoxLayout(auth_grp)
+        arow = QHBoxLayout()
+        self.chk_cookies = QCheckBox("Use Cookies"); self.chk_cookies.toggled.connect(lambda c: self.path_cookies.setEnabled(c))
+        self.path_cookies = QLineEdit(); self.path_cookies.setPlaceholderText("cookies.txt path..."); self.path_cookies.setEnabled(False)
+        btn_bc = QPushButton("📂"); btn_bc.clicked.connect(self._browse_cookies)
+        arow.addWidget(self.chk_cookies); arow.addWidget(self.path_cookies); arow.addWidget(btn_bc)
+        brow = QHBoxLayout()
+        btn_val = QPushButton("🍪 Validate Cookies"); btn_val.clicked.connect(self.validate_cookies)
+        btn_get = QPushButton("Get New Cookies"); btn_get.clicked.connect(self._open_cookie_help)
+        brow.addWidget(btn_val); brow.addWidget(btn_get)
+        al.addLayout(arow); al.addLayout(brow)
+        l.addWidget(auth_grp)
+        
         grp = QGroupBox("Network"); grp.setStyleSheet("color: white; border: 1px solid #444; margin-top: 10px;")
         gl = QVBoxLayout(grp)
         self.proxy_input = QLineEdit(); self.proxy_input.setPlaceholderText("http://user:pass@host:port")
@@ -498,32 +611,121 @@ class DownloaderApp(BaseApp):
         gl2 = QVBoxLayout(grp2)
         self.chk_whole = QCheckBox("Force Whole File (No Fragments)")
         self.chk_merge = QCheckBox("Force Merge (MP4/MKV)"); self.chk_merge.setChecked(True)
-        self.tpl_input = QLineEdit(); self.tpl_input.setText("%(title)s.%(ext)s"); self.tpl_input.setPlaceholderText("Output Template...")
         gl2.addWidget(self.chk_whole); gl2.addWidget(self.chk_merge)
-        gl2.addWidget(QLabel("Filename Template:")); gl2.addWidget(self.tpl_input)
+        self.sub_lang = QLineEdit(); self.sub_lang.setPlaceholderText("Sub Langs (e.g. en,ja)...")
+        gl2.addWidget(QLabel("Global Subtitles:")); gl2.addWidget(self.sub_lang)
         
-        # Update Button (V6)
         btn_upd = QPushButton("Check for Updates (yt-dlp)"); btn_upd.clicked.connect(self.update_ytdlp)
         gl2.addWidget(btn_upd)
-        
         l.addWidget(grp2); l.addStretch()
         return w
 
-    # --- QUEUE & SYNC (V6) ---
-    def _on_queue_drop(self, event):
-        """Syncs the internal queue list after a drag & drop reorder."""
-        super(QTableWidget, self.queue_table).dropEvent(event)
+    # --- SCRAPE HELPER ---
+    def _get_scraper_config(self):
+        """Constructs a config dictionary specifically for scraped items based on Batch Settings."""
+        # This uses the settings from the Scraper Tab, NOT the main download tab
+        return {
+            'path': self.path_input.text(),
+            'format': self.batch_fmt.currentText(),
+            'quality': self.batch_qual.currentText(),
+            'metadata': self.batch_meta.isChecked(),
+            'thumbnail': self.batch_thumb.isChecked(),
+            'subtitles': self.batch_subs.isChecked(),
+            'sub_langs': self.sub_lang.text(),
+            'whole_file': self.chk_whole.isChecked(),
+            'merge': self.chk_merge.isChecked(),
+            'source': "Normal",
+            'cookies': self.chk_cookies.isChecked(),
+            'cookies_file': self.path_cookies.text(),
+            'playlist': False, # Individual items
+            'proxy': self.proxy_input.text(),
+            'rate_limit': self.rate_input.text(),
+            'template': self.tpl_input.text(),
+            'date_after': self.date_after.text(),
+            'date_before': self.date_before.text(),
+            'ignore_shorts': self.chk_ignore_shorts.isChecked(),
+            'org_year': self.chk_org_year.isChecked(),
+            'org_month': self.chk_org_month.isChecked(),
+            'org_week': self.chk_org_week.isChecked(),
+            'separate_type': self.chk_sep_type.isChecked(),
+            'separate_members': self.chk_sep_members.isChecked(),
+            'content_filter': self.combo_content.currentText() # V13
+        }
+
+    def scrape_to_queue(self):
+        url = self.scrape_url.text().strip()
+        if not url: return
         
-        # Rebuild list from visual table
+        cmd = get_ytdlp_cmd()
+        # Use the specific scraper config
+        config = self._get_scraper_config()
+        
+        try: limit = int(self.spin_max_items.text())
+        except: limit = 0
+        
+        self.log_view.append(f"🔍 Scraping {url}...")
+        self.btn_scrape.setEnabled(False)
+        self.status_lbl.setText("Scraping Channel...")
+        self.pbar.setRange(0, 0)
+        
+        self.scrape_worker = ScrapeWorker(cmd, url, config, limit)
+        self.scrape_worker.found_item.connect(self._on_scrape_item_found)
+        self.scrape_worker.finished.connect(self._on_scrape_finished)
+        self.scrape_worker.start()
+
+    def _on_scrape_item_found(self, url, title):
+        # We need to capture the config AT THE MOMENT of scraping
+        config = self._get_scraper_config()
+        self.queue.append({'url': url, 'config': config, 'status': 'Pending'})
+        self.log_view.append(f"Found: {title}")
+
+    def _on_scrape_finished(self, success, msg, count):
+        self.btn_scrape.setEnabled(True)
+        self.pbar.setRange(0, 100); self.pbar.setValue(100)
+        self.status_lbl.setText(msg)
+        self.data_manager.save_queue(self.queue)
+        self._refresh_queue_table()
+        self._update_queue_stats()
+        
+        if success:
+            res = QMessageBox.question(self, "Scrape Done", f"Found {count} videos.\nGo to Queue tab?", QMessageBox.Yes | QMessageBox.No)
+            if res == QMessageBox.Yes: self.tabs.setCurrentIndex(2)
+        else:
+            QMessageBox.warning(self, "Scrape Issue", msg)
+
+    # --- COOKIE VALIDATION ---
+    def validate_cookies(self):
+        path = self.path_cookies.text()
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "Error", "Select a valid cookie file first.")
+            return
+        cmd = get_ytdlp_cmd()
+        self.cookie_worker = CookieValidatorWorker(cmd, path)
+        self.cookie_worker.finished.connect(lambda ok, msg: QMessageBox.information(self, "Result", msg) if ok else QMessageBox.warning(self, "Invalid", msg))
+        self.cookie_worker.start()
+
+    # --- QUEUE & SYNC ---
+    def _update_queue_stats(self):
+        total = len(self.queue)
+        if total == 0:
+            self.bar_queue_progress.setValue(0)
+            self.lbl_queue_progress.setText("Queue Empty")
+            return
+        done = sum(1 for item in self.queue if item['status'] in ['Done', 'Failed'])
+        pct = int((done / total) * 100)
+        self.bar_queue_progress.setValue(pct)
+        self.lbl_queue_progress.setText(f"Batch Progress: {done}/{total} ({pct}%)")
+
+    def _on_queue_drop(self, event):
+        super(QTableWidget, self.queue_table).dropEvent(event)
         new_queue = []
         for row in range(self.queue_table.rowCount()):
-            # Recover data from UserRole
             item = self.queue_table.item(row, 0)
             data = item.data(Qt.UserRole)
             if data: new_queue.append(data)
-            
         self.queue = new_queue
         self.data_manager.save_queue(self.queue)
+        self._update_queue_stats()
 
     def import_queue(self):
         f, _ = QFileDialog.getOpenFileName(self, "Import Queue", "", "JSON (*.json)")
@@ -533,6 +735,7 @@ class DownloaderApp(BaseApp):
                 self.queue.extend(new_q)
                 self.data_manager.save_queue(self.queue)
                 self._refresh_queue_table()
+                self._update_queue_stats()
                 QMessageBox.information(self, "Imported", f"Imported {len(new_q)} items.")
             except: QMessageBox.warning(self, "Error", "Invalid Queue File")
 
@@ -552,7 +755,6 @@ class DownloaderApp(BaseApp):
             self.process_queue()
 
     def update_ytdlp(self):
-        # V7: Use smart command detection for updates too
         cmd = get_ytdlp_cmd()
         self.status_lbl.setText(f"Updating using: {' '.join(cmd)}...")
         self.update_worker = UpdateWorker(cmd)
@@ -567,6 +769,7 @@ class DownloaderApp(BaseApp):
         self.queue.append({'url': url, 'config': config, 'status': 'Pending'})
         self.data_manager.save_queue(self.queue)
         self._refresh_queue_table()
+        self._update_queue_stats()
         self.url_input.clear()
 
     def process_queue(self):
@@ -613,6 +816,7 @@ class DownloaderApp(BaseApp):
             self.queue[idx]['status'] = 'Done' if success else 'Failed'
             self.data_manager.save_queue(self.queue)
             self._refresh_queue_table()
+            self._update_queue_stats()
             self.data_manager.add_history(item['url'], title, "Success" if success else "Fail", item['config']['path'])
             self._load_history()
             self._process_next_queue_item()
@@ -623,7 +827,6 @@ class DownloaderApp(BaseApp):
     def _refresh_queue_table(self):
         self.queue_table.setRowCount(len(self.queue))
         for r, item in enumerate(self.queue):
-            # Store Full Data in UserRole for Drag/Drop Sync
             url_item = QTableWidgetItem(item['url'])
             url_item.setData(Qt.UserRole, item)
             self.queue_table.setItem(r, 0, url_item)
@@ -640,6 +843,7 @@ class DownloaderApp(BaseApp):
         self.queue = []
         self.data_manager.save_queue(self.queue)
         self._refresh_queue_table()
+        self._update_queue_stats()
 
     def _queue_menu(self, pos):
         item = self.queue_table.itemAt(pos)
@@ -653,6 +857,7 @@ class DownloaderApp(BaseApp):
             self.queue.pop(row)
             self.data_manager.save_queue(self.queue)
             self._refresh_queue_table()
+            self._update_queue_stats()
 
     # --- SHARED LOGIC ---
     def _apply_preset(self, preset_name):
@@ -682,7 +887,15 @@ class DownloaderApp(BaseApp):
             'playlist': self.chk_playlist.isChecked(),
             'proxy': self.proxy_input.text(),
             'rate_limit': self.rate_input.text(),
-            'template': self.tpl_input.text()
+            'template': self.tpl_input.text(),
+            'date_after': self.date_after.text(),
+            'date_before': self.date_before.text(),
+            'ignore_shorts': self.chk_ignore_shorts.isChecked(),
+            'org_year': self.chk_org_year.isChecked(),
+            'org_month': self.chk_org_month.isChecked(),
+            'org_week': self.chk_org_week.isChecked(),
+            'separate_type': self.chk_sep_type.isChecked(),
+            'separate_members': self.chk_sep_members.isChecked()
         }
 
     def start_download(self):
@@ -692,14 +905,9 @@ class DownloaderApp(BaseApp):
 
     def _initiate_download(self, url):
         config = self._get_current_config()
-        
-        # LOGIC CHANGE: Auto-create path if missing
         if config['path'] and not os.path.exists(config['path']):
-            try:
-                os.makedirs(config['path'], exist_ok=True)
-            except:
-                QMessageBox.warning(self, "Error", "Invalid download folder.")
-                return
+            try: os.makedirs(config['path'], exist_ok=True)
+            except: QMessageBox.warning(self, "Error", "Invalid folder."); return
 
         self.worker = DownloadWorker(url, config)
         self.worker.log_updated.connect(self.log_view.append)
@@ -746,16 +954,13 @@ class DownloaderApp(BaseApp):
     def test_access(self):
         url = self.url_input.text().strip()
         if not url: return
-        
         if self.chk_cookies.isChecked():
             cpath = self.path_cookies.text()
             if not self._validate_cookie_file(cpath):
                 QMessageBox.warning(self, "Invalid Cookies", "File does not appear to be Netscape format.")
                 return
         
-        # Use Smart Cmd Logic
         cmd = get_ytdlp_cmd()
-        
         config = self._get_current_config()
         self.test_worker = TestWorker(cmd, url, config)
         self.test_worker.finished.connect(lambda s, m, i: QMessageBox.information(self, "Access", f"{m}\n{i.get('title','')}") if s else QMessageBox.warning(self, "Fail", m))
@@ -801,24 +1006,47 @@ class DownloaderApp(BaseApp):
 
     def _load_settings(self):
         lp = self.settings.value("last_path")
-        
-        # LOGIC CHANGE: Default to Mio_Downloads on Desktop
         if not lp: 
             desktop = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
             mio_dl = os.path.join(desktop, "Mio_Downloads")
-            try:
-                os.makedirs(mio_dl, exist_ok=True)
-                lp = mio_dl
-            except:
-                lp = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+            try: os.makedirs(mio_dl, exist_ok=True); lp = mio_dl
+            except: lp = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
         
         self.path_input.setText(lp)
         self.proxy_input.setText(self.settings.value("proxy", ""))
         self.rate_input.setText(self.settings.value("rate", ""))
+        self.date_after.setText(self.settings.value("date_after", ""))
+        self.date_before.setText(self.settings.value("date_before", ""))
+        self.chk_ignore_shorts.setChecked(self.settings.value("ignore_shorts", False, type=bool))
+        
+        self.chk_org_year.setChecked(self.settings.value("org_year", False, type=bool))
+        self.chk_org_month.setChecked(self.settings.value("org_month", False, type=bool))
+        self.chk_org_week.setChecked(self.settings.value("org_week", False, type=bool))
+        self.chk_sep_type.setChecked(self.settings.value("org_separate_type", False, type=bool))
+        self.chk_sep_members.setChecked(self.settings.value("org_separate_members", False, type=bool)) 
+        
+        self.tpl_input.setText(self.settings.value("template", "%(upload_date>%Y-%m-%d)s_%(title)s.%(ext)s"))
+        
+        # Load Scraper defaults
+        self.combo_content.setCurrentText(self.settings.value("content_filter", "All Content"))
+        
         self._load_history()
 
     def closeEvent(self, event):
         self.settings.setValue("last_path", self.path_input.text())
         self.settings.setValue("proxy", self.proxy_input.text())
         self.settings.setValue("rate", self.rate_input.text())
+        self.settings.setValue("date_after", self.date_after.text())
+        self.settings.setValue("date_before", self.date_before.text())
+        self.settings.setValue("ignore_shorts", self.chk_ignore_shorts.isChecked())
+        
+        self.settings.setValue("org_year", self.chk_org_year.isChecked())
+        self.settings.setValue("org_month", self.chk_org_month.isChecked())
+        self.settings.setValue("org_week", self.chk_org_week.isChecked())
+        self.settings.setValue("org_separate_type", self.chk_sep_type.isChecked())
+        self.settings.setValue("org_separate_members", self.chk_sep_members.isChecked()) 
+        self.settings.setValue("template", self.tpl_input.text())
+        
+        self.settings.setValue("content_filter", self.combo_content.currentText())
+        
         super().closeEvent(event)
