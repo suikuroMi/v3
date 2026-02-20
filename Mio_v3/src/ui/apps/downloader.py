@@ -343,11 +343,10 @@ class DownloadWorker(QThread):
         path_parts.append(tmpl)
         
         full_template = "/".join(path_parts)
-        # V22: FORCE Absolute Path to solve missing files
         base_path = os.path.abspath(c['path'])
         out_path = os.path.join(base_path, full_template)
         
-        self.log_updated.emit(f"📂 Saving to: {out_path}") # Log exact path
+        self.log_updated.emit(f"📂 Saving to: {out_path}") 
         cmd += ["-o", out_path]
         
         archive_file = os.path.join(base_path, "archive.txt")
@@ -382,8 +381,13 @@ class DownloadWorker(QThread):
         else:
             if c['whole_file']: cmd += ["-f", "best"]
             else:
-                if c['quality'] == 'best': cmd += ["-f", "bestvideo+bestaudio/best"]
-                else: cmd += ["-f", f"bestvideo[height<={c['quality']}]+bestaudio/best"]
+                # FIX: Handle Opus format incompatibility before merge
+                audio_codec = "m4a" if c.get('audio_type') == "AAC (Safe)" else "bestaudio"
+                if c['quality'] == 'best': 
+                    cmd += ["-f", f"bestvideo+{audio_codec}/best"]
+                else: 
+                    cmd += ["-f", f"bestvideo[height<={c['quality']}]+{audio_codec}/best"]
+                
                 if c['merge']: cmd += ["--merge-output-format", c['format']]
 
         if c['whole_file']: cmd += ["--no-part"]
@@ -479,11 +483,17 @@ class DownloaderApp(BaseApp):
         ol = QHBoxLayout(opts)
         self.combo_format = QComboBox(); self.combo_format.addItems(["mp4", "mp3", "m4a", "mkv"])
         self.combo_quality = QComboBox(); self.combo_quality.addItems(["best", "1080", "720", "480"])
+        
+        # FIX: Audio Selection for FFmpeg Merge
+        self.combo_audio_type = QComboBox(); self.combo_audio_type.addItems(["AAC (Safe)", "Opus (Best)"])
+        self.combo_audio_type.setToolTip("Choose AAC to fix 'Opus not supported' errors in some players.")
+        
         self.chk_meta = QCheckBox("Meta"); self.chk_meta.setChecked(True)
         self.chk_thumb = QCheckBox("Thumb"); self.chk_thumb.setChecked(True)
         self.chk_subs = QCheckBox("Subs") 
         ol.addWidget(QLabel("Fmt:")); ol.addWidget(self.combo_format)
         ol.addWidget(QLabel("Qual:")); ol.addWidget(self.combo_quality)
+        ol.addWidget(QLabel("Audio:")); ol.addWidget(self.combo_audio_type)
         ol.addWidget(self.chk_meta); ol.addWidget(self.chk_thumb); ol.addWidget(self.chk_subs)
         l.addWidget(opts)
         
@@ -491,7 +501,7 @@ class DownloaderApp(BaseApp):
         pl = QHBoxLayout()
         self.path_input = QLineEdit(); self.path_input.setPlaceholderText("Output Folder...")
         btn_bp = QPushButton("📂"); btn_bp.clicked.connect(self._browse_folder)
-        btn_open = QPushButton("Open Output Folder") # V22
+        btn_open = QPushButton("Open Output Folder") 
         btn_open.setStyleSheet("background: #429AFF; color: white;")
         btn_open.clicked.connect(self._open_current_output_folder)
         pl.addWidget(self.path_input); pl.addWidget(btn_bp); pl.addWidget(btn_open)
@@ -677,7 +687,6 @@ class DownloaderApp(BaseApp):
     def _open_current_output_folder(self):
         path = self.path_input.text()
         if not path or not os.path.exists(path):
-            # Try to create it or default to Desktop
             try:
                 os.makedirs(path, exist_ok=True)
             except:
@@ -691,6 +700,7 @@ class DownloaderApp(BaseApp):
             'path': self.path_input.text(),
             'format': self.batch_fmt.currentText(),
             'quality': self.batch_qual.currentText(),
+            'audio_type': self.combo_audio_type.currentText(), # Inherit from single tab
             'metadata': self.batch_meta.isChecked(),
             'thumbnail': self.batch_thumb.isChecked(),
             'subtitles': self.batch_subs.isChecked(),
@@ -708,7 +718,6 @@ class DownloaderApp(BaseApp):
             'date_before': self.date_before.text(),
             'ignore_shorts': self.chk_ignore_shorts.isChecked(),
             
-            # V20: Channel Org
             'org_channel': self.chk_org_channel.isChecked(),
             'org_year': self.chk_org_year.isChecked(),
             'org_month': self.chk_org_month.isChecked(),
@@ -723,7 +732,6 @@ class DownloaderApp(BaseApp):
         url = self.scrape_url.text().strip()
         if not url: return
         
-        # V16: Smart Redirect for Members Only
         config = self._get_scraper_config()
         if config.get('content_filter') == "Members/Premium Only":
             if "youtube.com" in url and "/membership" not in url and "list=" not in url:
@@ -891,7 +899,6 @@ class DownloaderApp(BaseApp):
         
         item = self.queue[idx]
         
-        # V22: Use helper to ensure path exists immediately before download
         try:
             if not os.path.exists(item['config']['path']):
                 os.makedirs(item['config']['path'], exist_ok=True)
@@ -969,6 +976,7 @@ class DownloaderApp(BaseApp):
             'path': self.path_input.text(),
             'format': self.combo_format.currentText(),
             'quality': self.combo_quality.currentText(),
+            'audio_type': self.combo_audio_type.currentText(), # Manual selection
             'metadata': self.chk_meta.isChecked(),
             'thumbnail': self.chk_thumb.isChecked(),
             'subtitles': self.chk_subs.isChecked(),
@@ -986,7 +994,6 @@ class DownloaderApp(BaseApp):
             'date_before': self.date_before.text(),
             'ignore_shorts': self.chk_ignore_shorts.isChecked(),
             
-            # V20: Channel Org
             'org_channel': self.chk_org_channel.isChecked(),
             'org_year': self.chk_org_year.isChecked(),
             'org_month': self.chk_org_month.isChecked(),
@@ -1104,7 +1111,6 @@ class DownloaderApp(BaseApp):
         self._load_history()
 
     def _load_settings(self):
-        # V22: Use QStandardPaths for safer default
         lp = self.settings.value("last_path")
         if not lp or not os.path.exists(lp):
             desktop = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
@@ -1119,8 +1125,7 @@ class DownloaderApp(BaseApp):
         self.date_before.setText(self.settings.value("date_before", ""))
         self.chk_ignore_shorts.setChecked(self.settings.value("ignore_shorts", False, type=bool))
         
-        # V15 Defaults
-        self.chk_org_channel.setChecked(self.settings.value("org_channel", True, type=bool)) # V20
+        self.chk_org_channel.setChecked(self.settings.value("org_channel", True, type=bool))
         self.chk_org_year.setChecked(self.settings.value("org_year", True, type=bool))
         self.chk_org_month.setChecked(self.settings.value("org_month", True, type=bool))
         self.chk_org_week.setChecked(self.settings.value("org_week", True, type=bool))
@@ -1129,8 +1134,10 @@ class DownloaderApp(BaseApp):
         self.chk_sep_members.setChecked(self.settings.value("org_separate_members", True, type=bool))
         
         self.tpl_input.setText(self.settings.value("template", "%(upload_date>%Y-%m-%d)s_%(title)s.%(ext)s"))
-        
         self.combo_content.setCurrentText(self.settings.value("content_filter", "All Content"))
+        
+        # FIX: Persistent Audio Setting
+        self.combo_audio_type.setCurrentText(self.settings.value("audio_type", "AAC (Safe)"))
         
         self._load_history()
 
@@ -1142,7 +1149,7 @@ class DownloaderApp(BaseApp):
         self.settings.setValue("date_before", self.date_before.text())
         self.settings.setValue("ignore_shorts", self.chk_ignore_shorts.isChecked())
         
-        self.settings.setValue("org_channel", self.chk_org_channel.isChecked()) # V20
+        self.settings.setValue("org_channel", self.chk_org_channel.isChecked())
         self.settings.setValue("org_year", self.chk_org_year.isChecked())
         self.settings.setValue("org_month", self.chk_org_month.isChecked())
         self.settings.setValue("org_week", self.chk_org_week.isChecked())
@@ -1153,6 +1160,9 @@ class DownloaderApp(BaseApp):
         
         self.settings.setValue("template", self.tpl_input.text())
         self.settings.setValue("content_filter", self.combo_content.currentText())
+        
+        # FIX: Persistent Audio Setting
+        self.settings.setValue("audio_type", self.combo_audio_type.currentText())
         
         self.stop_scrape() 
         super().closeEvent(event)
