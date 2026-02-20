@@ -114,8 +114,9 @@ class CookieValidatorWorker(QThread):
         except Exception as e: self.finished.emit(False, str(e))
 
 class ScrapeWorker(QThread):
-    found_item = Signal(str, str) # url, title
-    finished = Signal(bool, str, int) # success, msg, count
+    found_item = Signal(str, str) 
+    finished = Signal(bool, str, int) 
+    log_updated = Signal(str)
 
     def __init__(self, cmd_prefix, url, config, max_items=0):
         super().__init__()
@@ -124,48 +125,30 @@ class ScrapeWorker(QThread):
         self.config = config
         self.max_items = max_items
         self._is_running = True
+        self.process = None
 
     def run(self):
-        # Base command
-        cmd = self.cmd_prefix + ["--dump-json", "--skip-download", "--no-warnings"]
+        cmd = self.cmd_prefix + [
+            "--dump-json", 
+            "--skip-download", 
+            "--no-warnings",
+            "--flat-playlist",
+            "--ignore-errors"
+        ]
         
-        # Optimization: Use flat-playlist ONLY if we are NOT doing complex filtering that requires metadata
-        # If user wants "Streams Only", we need metadata (was_live), so we drop flat-playlist to get full data.
-        complex_filter = self.config.get('content_filter', 'All') != 'All'
-        if not complex_filter:
-            cmd += ["--flat-playlist"]
-        
-        # Limits
         if self.max_items > 0: cmd += ["--playlist-end", str(self.max_items)]
         
-        # --- FILTERS ---
         filters = []
-        
-        # 1. Shorts
         if self.config.get('ignore_shorts'): 
             filters.append("original_url!*=/shorts/ & url!*=/shorts/")
             
-        # 2. Content Type (V13)
-        ctype = self.config.get('content_filter', 'All')
-        if ctype == "Uploaded Videos Only":
-            # Not live AND not was live
-            filters.append("!is_live & !was_live")
-        elif ctype == "Live Streams / VODs Only":
-            # Is live OR was live
-            filters.append("is_live | was_live")
-        elif ctype == "Members/Premium Only":
-            # Availability check
-            filters.append("availability=subscriber_only")
-
         if filters:
             match_string = " & ".join([f"({f})" for f in filters])
             cmd += ["--match-filter", match_string]
         
-        # Date Filters
         if self.config.get('date_after'): cmd += ["--dateafter", self.config['date_after']]
         if self.config.get('date_before'): cmd += ["--datebefore", self.config['date_before']]
 
-        # Auth
         if self.config.get('cookies') and self.config.get('cookies_file'):
             cmd += ["--cookies", self.config['cookies_file']]
 
@@ -173,14 +156,25 @@ class ScrapeWorker(QThread):
 
         count = 0
         try:
+            self.log_updated.emit(f"CMD: {' '.join(cmd)}")
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-            process = subprocess.Popen(
+            
+            self.process = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
                 text=True, creationflags=creation_flags
             )
             
-            for line in process.stdout:
-                if not self._is_running: process.terminate(); break
+            def read_stderr():
+                for line in self.process.stderr:
+                    if line.strip(): self.log_updated.emit(f"ERR: {line.strip()}")
+            
+            t_err = threading.Thread(target=read_stderr, daemon=True)
+            t_err.start()
+            
+            for line in self.process.stdout:
+                if not self._is_running: 
+                    self.process.terminate()
+                    break
                 try:
                     data = json.loads(line)
                     url = data.get('url')
@@ -190,17 +184,23 @@ class ScrapeWorker(QThread):
                             if "://" not in url: url = f"https://www.youtube.com/watch?v={url}"
                         self.found_item.emit(url, title)
                         count += 1
+                        if count % 10 == 0: self.log_updated.emit(f"Found {count} videos...")
                 except: pass
             
-            process.wait()
-            if process.returncode == 0: self.finished.emit(True, "Scrape Complete", count)
-            else: self.finished.emit(False, "Scrape Stopped/Failed", count)
+            self.process.wait()
+            t_err.join()
+            
+            if self.process.returncode == 0: self.finished.emit(True, "Scrape Complete", count)
+            else: self.finished.emit(False, "Scrape Finished (with some errors)", count)
 
         except Exception as e:
             self.finished.emit(False, str(e), count)
 
     def stop(self):
         self._is_running = False
+        if self.process:
+            try: self.process.terminate()
+            except: pass
 
 class UpdateWorker(QThread):
     finished = Signal(bool, str)
@@ -246,7 +246,7 @@ class DownloadWorker(QThread):
     progress_updated = Signal(float, str) 
     log_updated = Signal(str)
     status_changed = Signal(DownloadState)
-    finished = Signal(bool, str, str)
+    finished = Signal(bool, str, str) # success, msg, error_detail
 
     def __init__(self, url, config):
         super().__init__()
@@ -254,6 +254,7 @@ class DownloadWorker(QThread):
         self.config = config
         self._is_running = True
         self.process = None
+        self.error_buffer = []
 
     def stop(self):
         self._is_running = False
@@ -271,34 +272,69 @@ class DownloadWorker(QThread):
         cmd = self._build_command(yt_cmd, self.url)
         current_title = "Unknown"
         success = False
+        self.error_buffer = []
+
         try:
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             self.process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, bufsize=1, universal_newlines=True,
                 creationflags=creation_flags
             )
+            
+            def collect_stderr():
+                for line in self.process.stderr:
+                    if line.strip(): 
+                        self.error_buffer.append(line.strip())
+                        self.log_updated.emit(f"ERR: {line.strip()}")
+
+            t_err = threading.Thread(target=collect_stderr, daemon=True)
+            t_err.start()
+            
             for line in iter(self.process.stdout.readline, ''):
-                if not self._is_running: self.process.terminate(); break
+                if not self._is_running: 
+                    self.process.terminate()
+                    break
                 line = line.strip()
                 if not line: continue
                 self.log_updated.emit(line)
                 self._parse_progress(line)
                 if "[download] Destination:" in line:
                     current_title = os.path.basename(line.split(":", 1)[1].strip())
+
             self.process.wait()
+            t_err.join() 
             success = (self.process.returncode == 0)
-        except Exception as e: self.log_updated.emit(f"Error: {str(e)}")
+            
+        except Exception as e: 
+            self.log_updated.emit(f"Crit Error: {str(e)}")
+            self.error_buffer.append(str(e))
+
         self.status_changed.emit(DownloadState.FINISHED if success else DownloadState.ERROR)
-        self.finished.emit(success, "Completed" if success else "Failed", current_title)
+        
+        status_text = "Completed"
+        if not success:
+            real_errors = [l for l in self.error_buffer if "WARNING" not in l and "frame=" not in l]
+            if real_errors:
+                err_raw = real_errors[-1]
+                status_text = err_raw.replace("ERROR: ", "").replace("[youtube]", "").strip()[:50] 
+            else:
+                status_text = "Unknown Error (See Logs)"
+
+        self.finished.emit(success, status_text, current_title)
 
     def _build_command(self, prefix, url):
         c = self.config
         cmd = prefix.copy()
         
         path_parts = []
+        if c.get('org_channel'): path_parts.append("%(uploader)s")
         if c.get('separate_members'): path_parts.append("%(availability)s")
-        if c.get('separate_type'): path_parts.append("%(was_live&Streams|Videos)s")
+        if c.get('separate_streams') and c.get('separate_videos'):
+            path_parts.append("%(was_live&Streams|Videos)s")
+        elif c.get('separate_streams'): path_parts.append("%(was_live&Streams|)s")
+        elif c.get('separate_videos'): path_parts.append("%(was_live&|Videos)s")
+            
         if c.get('org_year'): path_parts.append("%(upload_date>%Y)s")
         if c.get('org_month'): path_parts.append("%(upload_date>%m)s")
         if c.get('org_week'): path_parts.append("Week_%(upload_date>%W)s")
@@ -307,25 +343,39 @@ class DownloadWorker(QThread):
         path_parts.append(tmpl)
         
         full_template = "/".join(path_parts)
-        out_path = os.path.join(c['path'], full_template)
+        # V22: FORCE Absolute Path to solve missing files
+        base_path = os.path.abspath(c['path'])
+        out_path = os.path.join(base_path, full_template)
+        
+        self.log_updated.emit(f"📂 Saving to: {out_path}") # Log exact path
         cmd += ["-o", out_path]
         
-        archive_file = os.path.join(c['path'], "archive.txt")
+        archive_file = os.path.join(base_path, "archive.txt")
         cmd += ["--download-archive", archive_file]
         cmd += ["--ignore-errors", "--no-abort-on-error"]
         cmd += ["--retries", "infinite", "--fragment-retries", "infinite", "--retry-sleep", "fragment:exp=1:30"]
         
-        if c['cookies'] and c['cookies_file']: cmd += ["--cookies", c['cookies_file']]
-        if c['source'] == "SPWN": cmd += ["--user-agent", "Mozilla/5.0...", "--referer", "https://spwn.jp/", "--hls-prefer-ffmpeg"]
-        elif c['source'] == "YouTube": cmd += ["--user-agent", "Mozilla/5.0..."]
-        elif c['source'] == "Twitter": cmd += ["--add-header", "Referer:https://twitter.com/"]
-        elif c['source'] == "Bilibili": cmd += ["--referer", "https://www.bilibili.com/"]
+        is_single_video = bool(re.search(r'(youtube\.com/watch\?v=|youtu\.be/|shorts/)', url))
+        
+        if not is_single_video:
+            filters = []
+            if c.get('ignore_shorts'): filters.append("original_url!*=/shorts/ & url!*=/shorts/")
+            ctype = c.get('content_filter', 'All')
+            if ctype == "Uploaded Videos Only": filters.append("!is_live & !was_live")
+            elif ctype == "Live Streams / VODs Only": filters.append("is_live | was_live")
+            elif ctype == "Members/Premium Only": filters.append("availability=subscriber_only")
+            
+            if filters:
+                match_string = " & ".join(filters)
+                cmd += ["--match-filter", match_string]
 
+        if c['cookies'] and c['cookies_file']: cmd += ["--cookies", c['cookies_file']]
         if c.get('proxy'): cmd += ["--proxy", c['proxy']]
         if c.get('rate_limit'): cmd += ["--limit-rate", c['rate_limit']]
         
-        if c.get('date_after'): cmd += ["--dateafter", c['date_after']]
-        if c.get('date_before'): cmd += ["--datebefore", c['date_before']]
+        if not is_single_video:
+            if c.get('date_after'): cmd += ["--dateafter", c['date_after']]
+            if c.get('date_before'): cmd += ["--datebefore", c['date_before']]
 
         if c['format'] == 'mp3':
             cmd += ["-x", "--audio-format", "mp3", "--audio-quality", c['quality'].replace("k", "K")]
@@ -425,7 +475,6 @@ class DownloaderApp(BaseApp):
         ul.addLayout(r1); ul.addLayout(r2)
         l.addWidget(url_frame)
         
-        # Batch Config Group (Single)
         opts = QFrame(); opts.setStyleSheet("background: #252530; border-radius: 8px; padding: 5px;")
         ol = QHBoxLayout(opts)
         self.combo_format = QComboBox(); self.combo_format.addItems(["mp4", "mp3", "m4a", "mkv"])
@@ -442,7 +491,9 @@ class DownloaderApp(BaseApp):
         pl = QHBoxLayout()
         self.path_input = QLineEdit(); self.path_input.setPlaceholderText("Output Folder...")
         btn_bp = QPushButton("📂"); btn_bp.clicked.connect(self._browse_folder)
-        btn_open = QPushButton("Open"); btn_open.clicked.connect(self._open_folder)
+        btn_open = QPushButton("Open Output Folder") # V22
+        btn_open.setStyleSheet("background: #429AFF; color: white;")
+        btn_open.clicked.connect(self._open_current_output_folder)
         pl.addWidget(self.path_input); pl.addWidget(btn_bp); pl.addWidget(btn_open)
         l.addLayout(pl)
         
@@ -464,7 +515,6 @@ class DownloaderApp(BaseApp):
     def _create_scraper_tab(self):
         w = QWidget(); l = QVBoxLayout(w)
         
-        # URL Input
         url_frame = QFrame(); url_frame.setStyleSheet("background: #252530; border-radius: 8px; padding: 10px;")
         ul = QHBoxLayout(url_frame)
         self.scrape_url = QLineEdit(); self.scrape_url.setPlaceholderText("Channel / Playlist URL to Scrape...")
@@ -472,57 +522,56 @@ class DownloaderApp(BaseApp):
         self.btn_scrape = QPushButton("🕵️ Scrape to Queue")
         self.btn_scrape.clicked.connect(self.scrape_to_queue)
         self.btn_scrape.setStyleSheet("background: #2196F3; color: white; padding: 8px;")
-        ul.addWidget(self.scrape_url); ul.addWidget(self.btn_scrape)
+        self.btn_stop_scrape = QPushButton("🛑 Stop")
+        self.btn_stop_scrape.clicked.connect(self.stop_scrape)
+        self.btn_stop_scrape.setStyleSheet("background: #f44336; color: white; padding: 8px;")
+        
+        ul.addWidget(self.scrape_url); ul.addWidget(self.btn_scrape); ul.addWidget(self.btn_stop_scrape)
         l.addWidget(url_frame)
         
-        # V13: Filters & Content Type
         filt_grp = QGroupBox("Content Filters")
         filt_grp.setStyleSheet("color: #aaa; border: 1px solid #444;")
         fl = QHBoxLayout(filt_grp)
-        
         self.combo_content = QComboBox()
         self.combo_content.addItems(["All Content", "Uploaded Videos Only", "Live Streams / VODs Only", "Members/Premium Only"])
         self.chk_ignore_shorts = QCheckBox("Ignore Shorts")
         self.spin_max_items = QLineEdit("0"); self.spin_max_items.setPlaceholderText("Limit (0=All)")
         self.spin_max_items.setFixedWidth(60)
-        
         fl.addWidget(QLabel("Fetch:")); fl.addWidget(self.combo_content)
         fl.addWidget(self.chk_ignore_shorts)
         fl.addWidget(QLabel("Limit:")); fl.addWidget(self.spin_max_items)
         l.addWidget(filt_grp)
         
-        # V13: Batch Configuration (Apply to all scraped items)
         batch_grp = QGroupBox("Download Settings for this Batch")
         batch_grp.setStyleSheet("color: #aaa; border: 1px solid #444;")
         bl = QHBoxLayout(batch_grp)
-        
         self.batch_fmt = QComboBox(); self.batch_fmt.addItems(["mp4", "mp3", "m4a", "mkv"])
         self.batch_qual = QComboBox(); self.batch_qual.addItems(["best", "1080", "720", "480"])
         self.batch_meta = QCheckBox("Meta"); self.batch_meta.setChecked(True)
         self.batch_thumb = QCheckBox("Thumb"); self.batch_thumb.setChecked(True)
         self.batch_subs = QCheckBox("Subs")
-        
         bl.addWidget(QLabel("Fmt:")); bl.addWidget(self.batch_fmt)
         bl.addWidget(QLabel("Qual:")); bl.addWidget(self.batch_qual)
         bl.addWidget(self.batch_meta); bl.addWidget(self.batch_thumb); bl.addWidget(self.batch_subs)
         l.addWidget(batch_grp)
         
-        # Organization
         org_grp = QGroupBox("Folder Organization"); org_grp.setStyleSheet("color: #aaa; border: 1px solid #444;")
         ol = QVBoxLayout(org_grp)
         row_org = QHBoxLayout()
+        self.chk_org_channel = QCheckBox("Channel Name") 
         self.chk_org_year = QCheckBox("Year"); self.chk_org_month = QCheckBox("Month"); self.chk_org_week = QCheckBox("Week")
-        row_org.addWidget(QLabel("Sub-folders:")); row_org.addWidget(self.chk_org_year); row_org.addWidget(self.chk_org_month); row_org.addWidget(self.chk_org_week); row_org.addStretch()
+        row_org.addWidget(QLabel("Sub-folders:")); 
+        row_org.addWidget(self.chk_org_channel)
+        row_org.addWidget(self.chk_org_year); row_org.addWidget(self.chk_org_month); row_org.addWidget(self.chk_org_week); row_org.addStretch()
         
         row_sep = QHBoxLayout()
-        self.chk_sep_type = QCheckBox("Separate Streams vs Videos")
+        self.chk_sep_streams = QCheckBox("Separate Streams")
+        self.chk_sep_videos = QCheckBox("Separate Videos")
         self.chk_sep_members = QCheckBox("Separate Members Only")
-        row_sep.addWidget(self.chk_sep_type); row_sep.addWidget(self.chk_sep_members); row_sep.addStretch()
-        
+        row_sep.addWidget(self.chk_sep_streams); row_sep.addWidget(self.chk_sep_videos); row_sep.addWidget(self.chk_sep_members); row_sep.addStretch()
         ol.addLayout(row_org); ol.addLayout(row_sep)
         l.addWidget(org_grp)
         
-        # Dates
         d_grp = QHBoxLayout()
         self.date_after = QLineEdit(); self.date_after.setPlaceholderText("Date After (YYYYMMDD)")
         self.date_before = QLineEdit(); self.date_before.setPlaceholderText("Date Before (YYYYMMDD)")
@@ -533,7 +582,11 @@ class DownloaderApp(BaseApp):
         self.tpl_input = QLineEdit(); self.tpl_input.setText("%(upload_date>%Y-%m-%d)s_%(title)s.%(ext)s")
         l.addWidget(self.tpl_input)
         
-        l.addStretch()
+        self.scraper_log = QTextBrowser()
+        self.scraper_log.setStyleSheet("background: #111; color: #00FF00; font-family: Consolas; font-size: 10px;")
+        l.addWidget(QLabel("Scraper Output:"))
+        l.addWidget(self.scraper_log)
+        
         return w
 
     def _create_queue_tab(self):
@@ -620,10 +673,20 @@ class DownloaderApp(BaseApp):
         l.addWidget(grp2); l.addStretch()
         return w
 
+    # --- HELPERS ---
+    def _open_current_output_folder(self):
+        path = self.path_input.text()
+        if not path or not os.path.exists(path):
+            # Try to create it or default to Desktop
+            try:
+                os.makedirs(path, exist_ok=True)
+            except:
+                path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+        
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
     # --- SCRAPE HELPER ---
     def _get_scraper_config(self):
-        """Constructs a config dictionary specifically for scraped items based on Batch Settings."""
-        # This uses the settings from the Scraper Tab, NOT the main download tab
         return {
             'path': self.path_input.text(),
             'format': self.batch_fmt.currentText(),
@@ -637,55 +700,74 @@ class DownloaderApp(BaseApp):
             'source': "Normal",
             'cookies': self.chk_cookies.isChecked(),
             'cookies_file': self.path_cookies.text(),
-            'playlist': False, # Individual items
+            'playlist': False, 
             'proxy': self.proxy_input.text(),
             'rate_limit': self.rate_input.text(),
             'template': self.tpl_input.text(),
             'date_after': self.date_after.text(),
             'date_before': self.date_before.text(),
             'ignore_shorts': self.chk_ignore_shorts.isChecked(),
+            
+            # V20: Channel Org
+            'org_channel': self.chk_org_channel.isChecked(),
             'org_year': self.chk_org_year.isChecked(),
             'org_month': self.chk_org_month.isChecked(),
             'org_week': self.chk_org_week.isChecked(),
-            'separate_type': self.chk_sep_type.isChecked(),
+            'separate_streams': self.chk_sep_streams.isChecked(),
+            'separate_videos': self.chk_sep_videos.isChecked(),
             'separate_members': self.chk_sep_members.isChecked(),
-            'content_filter': self.combo_content.currentText() # V13
+            'content_filter': self.combo_content.currentText() 
         }
 
     def scrape_to_queue(self):
         url = self.scrape_url.text().strip()
         if not url: return
         
-        cmd = get_ytdlp_cmd()
-        # Use the specific scraper config
+        # V16: Smart Redirect for Members Only
         config = self._get_scraper_config()
-        
+        if config.get('content_filter') == "Members/Premium Only":
+            if "youtube.com" in url and "/membership" not in url and "list=" not in url:
+                if url.endswith("/"): url += "membership"
+                else: url += "/membership"
+                self.scraper_log.append(f"🔒 Members Mode: Auto-redirecting to {url}")
+
+        cmd = get_ytdlp_cmd()
         try: limit = int(self.spin_max_items.text())
         except: limit = 0
         
-        self.log_view.append(f"🔍 Scraping {url}...")
+        self.scraper_log.clear()
+        self.scraper_log.append(f"🚀 Started Fast Scrape for: {url}")
         self.btn_scrape.setEnabled(False)
+        self.btn_stop_scrape.setEnabled(True)
         self.status_lbl.setText("Scraping Channel...")
         self.pbar.setRange(0, 0)
         
         self.scrape_worker = ScrapeWorker(cmd, url, config, limit)
         self.scrape_worker.found_item.connect(self._on_scrape_item_found)
         self.scrape_worker.finished.connect(self._on_scrape_finished)
+        self.scrape_worker.log_updated.connect(self.scraper_log.append)
         self.scrape_worker.start()
 
+    def stop_scrape(self):
+        if self.scrape_worker:
+            self.scrape_worker.stop()
+            self.scraper_log.append("🛑 Stopping Scraper...")
+
     def _on_scrape_item_found(self, url, title):
-        # We need to capture the config AT THE MOMENT of scraping
         config = self._get_scraper_config()
         self.queue.append({'url': url, 'config': config, 'status': 'Pending'})
-        self.log_view.append(f"Found: {title}")
+        self.scraper_log.append(f"Found: {title}")
 
     def _on_scrape_finished(self, success, msg, count):
         self.btn_scrape.setEnabled(True)
+        self.btn_stop_scrape.setEnabled(False)
         self.pbar.setRange(0, 100); self.pbar.setValue(100)
         self.status_lbl.setText(msg)
         self.data_manager.save_queue(self.queue)
         self._refresh_queue_table()
         self._update_queue_stats()
+        
+        self.scraper_log.append(f"--- Finished: Found {count} items ---")
         
         if success:
             res = QMessageBox.question(self, "Scrape Done", f"Found {count} videos.\nGo to Queue tab?", QMessageBox.Yes | QMessageBox.No)
@@ -711,7 +793,7 @@ class DownloaderApp(BaseApp):
             self.bar_queue_progress.setValue(0)
             self.lbl_queue_progress.setText("Queue Empty")
             return
-        done = sum(1 for item in self.queue if item['status'] in ['Done', 'Failed'])
+        done = sum(1 for item in self.queue if item['status'] in ['Done', 'Failed'] or "Failed" in str(item['status']))
         pct = int((done / total) * 100)
         self.bar_queue_progress.setValue(pct)
         self.lbl_queue_progress.setText(f"Batch Progress: {done}/{total} ({pct}%)")
@@ -808,12 +890,20 @@ class DownloaderApp(BaseApp):
         self._refresh_queue_table()
         
         item = self.queue[idx]
+        
+        # V22: Use helper to ensure path exists immediately before download
+        try:
+            if not os.path.exists(item['config']['path']):
+                os.makedirs(item['config']['path'], exist_ok=True)
+        except: pass
+
         self.worker = DownloadWorker(item['url'], item['config'])
         self.worker.log_updated.connect(self.log_view.append)
         self.worker.progress_updated.connect(lambda p, m: (self.pbar.setValue(int(p)), self.status_lbl.setText(m)))
         
-        def on_item_finish(success, msg, title):
-            self.queue[idx]['status'] = 'Done' if success else 'Failed'
+        def on_item_finish(success, msg, title, error_detail=""):
+            status_text = 'Done' if success else f'{msg}' 
+            self.queue[idx]['status'] = status_text
             self.data_manager.save_queue(self.queue)
             self._refresh_queue_table()
             self._update_queue_stats()
@@ -831,10 +921,14 @@ class DownloaderApp(BaseApp):
             url_item.setData(Qt.UserRole, item)
             self.queue_table.setItem(r, 0, url_item)
             
-            status_item = QTableWidgetItem(item['status'])
-            if item['status'] == "Done": status_item.setForeground(QBrush(QColor("#4CAF50")))
-            elif item['status'] == "Failed": status_item.setForeground(QBrush(QColor("#F44336")))
-            elif item['status'] == "Processing...": status_item.setForeground(QBrush(QColor("#2196F3")))
+            status_text = item['status']
+            status_item = QTableWidgetItem(status_text)
+            
+            if "Done" in status_text: status_item.setForeground(QBrush(QColor("#4CAF50")))
+            elif "Failed" in status_text or "Error" in status_text: 
+                status_item.setForeground(QBrush(QColor("#F44336")))
+                status_item.setToolTip(status_text)
+            elif "Processing" in status_text: status_item.setForeground(QBrush(QColor("#2196F3")))
             
             self.queue_table.setItem(r, 1, status_item)
             self.queue_table.setItem(r, 2, QTableWidgetItem(f"{item['config']['format']}"))
@@ -891,11 +985,16 @@ class DownloaderApp(BaseApp):
             'date_after': self.date_after.text(),
             'date_before': self.date_before.text(),
             'ignore_shorts': self.chk_ignore_shorts.isChecked(),
+            
+            # V20: Channel Org
+            'org_channel': self.chk_org_channel.isChecked(),
             'org_year': self.chk_org_year.isChecked(),
             'org_month': self.chk_org_month.isChecked(),
             'org_week': self.chk_org_week.isChecked(),
-            'separate_type': self.chk_sep_type.isChecked(),
-            'separate_members': self.chk_sep_members.isChecked()
+            'separate_streams': self.chk_sep_streams.isChecked(),
+            'separate_videos': self.chk_sep_videos.isChecked(),
+            'separate_members': self.chk_sep_members.isChecked(),
+            'content_filter': self.combo_content.currentText() 
         }
 
     def start_download(self):
@@ -918,7 +1017,7 @@ class DownloaderApp(BaseApp):
         self.log_view.clear()
         self.worker.start()
 
-    def _on_single_finish(self, success, msg, title):
+    def _on_single_finish(self, success, msg, title, error_detail=""):
         self.btn_dl.setEnabled(True); self.btn_stop.setEnabled(False)
         self.pbar.setValue(100 if success else 0)
         self.status_lbl.setText(msg)
@@ -1005,11 +1104,12 @@ class DownloaderApp(BaseApp):
         self._load_history()
 
     def _load_settings(self):
+        # V22: Use QStandardPaths for safer default
         lp = self.settings.value("last_path")
-        if not lp: 
+        if not lp or not os.path.exists(lp):
             desktop = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
-            mio_dl = os.path.join(desktop, "Mio_Downloads")
-            try: os.makedirs(mio_dl, exist_ok=True); lp = mio_dl
+            lp = os.path.join(desktop, "Mio_Downloads")
+            try: os.makedirs(lp, exist_ok=True)
             except: lp = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
         
         self.path_input.setText(lp)
@@ -1019,15 +1119,17 @@ class DownloaderApp(BaseApp):
         self.date_before.setText(self.settings.value("date_before", ""))
         self.chk_ignore_shorts.setChecked(self.settings.value("ignore_shorts", False, type=bool))
         
-        self.chk_org_year.setChecked(self.settings.value("org_year", False, type=bool))
-        self.chk_org_month.setChecked(self.settings.value("org_month", False, type=bool))
-        self.chk_org_week.setChecked(self.settings.value("org_week", False, type=bool))
-        self.chk_sep_type.setChecked(self.settings.value("org_separate_type", False, type=bool))
-        self.chk_sep_members.setChecked(self.settings.value("org_separate_members", False, type=bool)) 
+        # V15 Defaults
+        self.chk_org_channel.setChecked(self.settings.value("org_channel", True, type=bool)) # V20
+        self.chk_org_year.setChecked(self.settings.value("org_year", True, type=bool))
+        self.chk_org_month.setChecked(self.settings.value("org_month", True, type=bool))
+        self.chk_org_week.setChecked(self.settings.value("org_week", True, type=bool))
+        self.chk_sep_streams.setChecked(self.settings.value("org_separate_streams", True, type=bool))
+        self.chk_sep_videos.setChecked(self.settings.value("org_separate_videos", True, type=bool))
+        self.chk_sep_members.setChecked(self.settings.value("org_separate_members", True, type=bool))
         
         self.tpl_input.setText(self.settings.value("template", "%(upload_date>%Y-%m-%d)s_%(title)s.%(ext)s"))
         
-        # Load Scraper defaults
         self.combo_content.setCurrentText(self.settings.value("content_filter", "All Content"))
         
         self._load_history()
@@ -1040,13 +1142,17 @@ class DownloaderApp(BaseApp):
         self.settings.setValue("date_before", self.date_before.text())
         self.settings.setValue("ignore_shorts", self.chk_ignore_shorts.isChecked())
         
+        self.settings.setValue("org_channel", self.chk_org_channel.isChecked()) # V20
         self.settings.setValue("org_year", self.chk_org_year.isChecked())
         self.settings.setValue("org_month", self.chk_org_month.isChecked())
         self.settings.setValue("org_week", self.chk_org_week.isChecked())
-        self.settings.setValue("org_separate_type", self.chk_sep_type.isChecked())
-        self.settings.setValue("org_separate_members", self.chk_sep_members.isChecked()) 
-        self.settings.setValue("template", self.tpl_input.text())
         
+        self.settings.setValue("org_separate_streams", self.chk_sep_streams.isChecked())
+        self.settings.setValue("org_separate_videos", self.chk_sep_videos.isChecked())
+        self.settings.setValue("org_separate_members", self.chk_sep_members.isChecked())
+        
+        self.settings.setValue("template", self.tpl_input.text())
         self.settings.setValue("content_filter", self.combo_content.currentText())
         
+        self.stop_scrape() 
         super().closeEvent(event)
